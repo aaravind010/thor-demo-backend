@@ -1,4 +1,0 @@
-<Solution>
-  <Project Path="src/CreateManifest.csproj" />
-  <Project Path="test/CreateManifest.Tests.csproj" />
-</Solution>

@@ -1,0 +1,95 @@
+{
+  "Comment": "Thor tenant provisioning (ADR §11). Each state invokes one Lambda handler and passes the whole ProvisioningState forward. Placeholders ${...FunctionArn} are substituted at deploy time by infra. On terminal failure the execution routes to ProvisioningFailed; wire that state's cause to an SQS DLQ + alarm in infra.",
+  "StartAt": "SeedTenantMetadata",
+  "States": {
+    "SeedTenantMetadata": {
+      "Type": "Task",
+      "Resource": "${SeedTenantMetadataFunctionArn}",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed", "Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "ProvisioningFailed" }],
+      "Next": "CreateTenantDatabase"
+    },
+    "CreateTenantDatabase": {
+      "Type": "Task",
+      "Resource": "${CreateTenantDatabaseFunctionArn}",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed", "Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "ProvisioningFailed" }],
+      "Next": "ProvisionCognito"
+    },
+    "ProvisionCognito": {
+      "Type": "Task",
+      "Resource": "${ProvisionCognitoFunctionArn}",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed", "Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "ProvisioningFailed" }],
+      "Next": "CreateAdminUser"
+    },
+    "CreateAdminUser": {
+      "Type": "Task",
+      "Resource": "${CreateAdminUserFunctionArn}",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed", "Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "ProvisioningFailed" }],
+      "Next": "ConfigureSubdomain"
+    },
+    "ConfigureSubdomain": {
+      "Type": "Task",
+      "Resource": "${ConfigureSubdomainFunctionArn}",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed", "Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "ProvisioningFailed" }],
+      "Next": "FinalizeRouting"
+    },
+    "FinalizeRouting": {
+      "Type": "Task",
+      "Resource": "${FinalizeRoutingFunctionArn}",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed", "Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "ProvisioningFailed" }],
+      "End": true
+    },
+    "ProvisioningFailed": {
+      "Type": "Fail",
+      "Error": "TenantProvisioningFailed",
+      "Cause": "A provisioning step failed after retries. The tenant remains status=Provisioning (not Active); inspect the execution history and DLQ."
+    }
+  }
+}

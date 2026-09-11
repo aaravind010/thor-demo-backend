@@ -1,4 +1,0 @@
-<Solution>
-  <Project Path="src/Thor.Workflows.Ingestion.csproj" />
-  <Project Path="test/Thor.Workflows.Ingestion.Tests.csproj" />
-</Solution>

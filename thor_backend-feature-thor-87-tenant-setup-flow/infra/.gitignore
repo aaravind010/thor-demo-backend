@@ -1,0 +1,6 @@
+**/.terraform/
+**/.terragrunt-cache/
+*.tfstate
+*.tfstate.*
+*.tfvars.json
+crash.log

@@ -1,7 +1,0 @@
-backend/functions/*/publish/
-backend/functions/*/*.zip
-backend/functions/*/.publish-hash
-backend/functions/*/src/bin/
-backend/functions/*/src/obj/
-backend/functions/*/test/bin/
-backend/functions/*/test/obj/

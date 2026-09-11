@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Thor.Authorizer.Core/Thor.Authorizer.Core.csproj" />
+    <Project Path="src/Thor.Authorizer.Function/Thor.Authorizer.Function.csproj" />
+  </Folder>
+  <Folder Name="/test/">
+    <Project Path="test/Thor.Authorizer.Test/Thor.Authorizer.Test.csproj" />
+  </Folder>
+</Solution>

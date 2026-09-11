@@ -1,0 +1,15 @@
+{
+  "Information": [
+    "This file provides default values for the deployment wizard inside Visual Studio and the AWS Lambda commands added to the .NET Core CLI.",
+    "This assembly hosts five handlers (one per Step Functions task). 'function-handler' below is only the default for `dotnet lambda` — each Lambda in infra sets its own handler string (see README).",
+    "dotnet lambda help"
+  ],
+  "profile": "",
+  "region": "",
+  "configuration": "Release",
+  "function-architecture": "x86_64",
+  "function-runtime": "dotnet10",
+  "function-memory-size": 512,
+  "function-timeout": 30,
+  "function-handler": "Thor.TenantProvisioning.Function::Thor.TenantProvisioning.Function.Handlers.SeedTenantMetadataFunction::Handle"
+}
