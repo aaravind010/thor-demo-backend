@@ -65,6 +65,13 @@ terraform {
 provider "aws" {
   region = "${local.account.aws_region}"
 
+  # The sandbox account runs Cloud Custodian auto-tag policies that stamp Owner + c7n-* on every
+  # new resource, and an org SCP explicitly denies ec2:DeleteTags on them. Without this, every plan
+  # after the first sees those tags as drift and the apply 403s trying to strip them.
+  ignore_tags {
+    keys         = ["Owner"]
+    key_prefixes = ["c7n-"]
+  }
 
   default_tags {
     tags = {
