@@ -93,7 +93,7 @@ module "frontend" {
   tags = var.tags
 }
 
-# Gated by enable_compute — needs thor-api's NLB listener to exist first (module.ecs.nlb_arns/nlb_dns_names are only populated once local.public_services is non-empty).
+# Gated by enable_compute — needs thor-api's NLB listener to exist first (module.ecs.nlb_listener_arns is only populated once local.public_services is non-empty).
 module "api_gateway" {
   count = var.enable_compute ? 1 : 0
 
@@ -101,9 +101,6 @@ module "api_gateway" {
 
   environment        = var.environment
   service_name       = local.public_service_name
-  nlb_arn            = module.ecs.nlb_arns[local.public_service_name]
-  nlb_dns_name       = module.ecs.nlb_dns_names[local.public_service_name]
-  nlb_listener_port  = var.services[local.public_service_name].nlb_listener_port
   nlb_listener_arn   = module.ecs.nlb_listener_arns[local.public_service_name]
   vpc_id             = local.vpc_id
   private_subnet_ids = local.private_subnet_ids
