@@ -77,6 +77,30 @@ module "ecs" {
   tags = var.tags
 }
 
+locals {
+  # var.hosted_zones is keyed by a logical name for readability in terragrunt.hcl — modules/route53
+  # keys by the real domain name (zone_name), so the re-keying happens here, once, at the boundary.
+  route53_zones = {
+    for zone_key, zone in var.hosted_zones : zone.zone_name => {
+      create_zone      = zone.create_zone
+      comment          = zone.comment
+      tags             = zone.tags
+      parent_zone_name = zone.parent_zone_name
+    }
+  }
+}
+
+# Hosted zones (apex + delegated per-env child). Gated off until the domain is confirmed and the
+# registrar's NS record points at the apex zone created here.
+module "route53" {
+  count = var.enable_route53 ? 1 : 0
+
+  source = "./modules/route53"
+
+  zones = local.route53_zones
+  tags  = var.tags
+}
+
 # Independent of network/compute — a private S3 bucket + CloudFront (OAC)
 # distribution for the static thor-demo-frontend SPA. The GitHub Actions
 # deploy role that syncs to it is bootstrapped separately by
@@ -241,7 +265,9 @@ module "tenant_provisioning" {
 
   source_dir = var.tenant_provisioning_source_dir
 
-  hosted_zone_id = var.tenant_provisioning_hosted_zone_id
+  # Tenant records land in the zone whose name is the base domain (e.g. dev.hartech.online), so
+  # enabling this requires enable_route53 and that zone in hosted_zones.
+  hosted_zone_id = module.route53[0].zone_ids[var.tenant_provisioning_base_domain]
   base_domain    = var.tenant_provisioning_base_domain
   dns_target     = var.tenant_provisioning_dns_target
 

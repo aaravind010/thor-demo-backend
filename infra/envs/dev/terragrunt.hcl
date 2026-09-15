@@ -74,6 +74,22 @@ inputs = {
     }
   }
 
+  # --- route53 (hosted zones) ---
+  # Both zones are created here. After the first apply, point the registrar's NS for the apex at
+  # `terragrunt output route53_name_servers`; the dev child's delegation record in the apex is
+  # created automatically via parent_zone_name.
+  enable_route53 = true
+
+  hosted_zones = {
+    apex = {
+      zone_name = "hartech.online"
+    }
+    thor = {
+      zone_name        = "dev.hartech.online"
+      parent_zone_name = "hartech.online"
+    }
+  }
+
   # --- frontend (static SPA: S3 + CloudFront) ---
   enable_frontend      = true
   frontend_price_class = "PriceClass_100"
@@ -100,18 +116,18 @@ inputs = {
   db_bootstrap_source_dir = "${get_repo_root()}/backend/functions/Thor.DbBootstrap/publish"
 
   # --- tenant provisioning (Step Functions onboarding workflow) ---
-  # Kept false until the Route53 hosted zone + domain values below are real: with it on, apply
-  # creates the state machine, six Lambdas, and (on execution) real Cognito/Route53 resources.
-  # `terraform validate` still checks the module while it is off. Flip to true to plan/apply it.
-  enable_tenant_provisioning     = false
+  # Kept false until the DNS target below is real: with it on, apply creates the state machine,
+  # six Lambdas, and (on execution) real Cognito/Route53 resources. `terraform validate` still
+  # checks the module while it is off. Flip to true to plan/apply it.
+  enable_tenant_provisioning     = true
   provisioning_db_user           = "thor_provisioner"
   master_db_app_user             = "thor_app"
   tenant_provisioning_source_dir = "${get_repo_root()}/backend/functions/Thor.TenantProvisioning/publish"
 
-  # TODO: replace with the real dev hosted zone / domain before enabling.
-  tenant_provisioning_hosted_zone_id = ""
-  tenant_provisioning_base_domain    = "tenants.dev.example.com"
-  tenant_provisioning_dns_target     = ""
+  # Tenant records go into the hosted_zones entry whose zone_name matches this.
+  tenant_provisioning_base_domain = "dev.hartech.online"
+  # TODO: set to the API's public hostname (wildcard custom domain target) before enabling.
+  tenant_provisioning_dns_target = ""
 
   tags = {}
 }

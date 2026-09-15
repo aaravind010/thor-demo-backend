@@ -1,5 +1,5 @@
 {
-  "Comment": "Thor tenant provisioning (ADR §11). Each state invokes one Lambda handler and passes the whole ProvisioningState forward. Placeholders ${...FunctionArn} are substituted at deploy time by infra. On terminal failure the execution routes to ProvisioningFailed; wire that state's cause to an SQS DLQ + alarm in infra.",
+  "Comment": "Thor tenant provisioning (ADR §11). Each state invokes one Lambda handler and passes the whole ProvisioningState forward. The *FunctionArn placeholders are substituted at deploy time by infra (Terraform templatefile). On terminal failure the execution routes to ProvisioningFailed; wire that state's cause to an SQS DLQ + alarm in infra.",
   "StartAt": "SeedTenantMetadata",
   "States": {
     "SeedTenantMetadata": {

@@ -129,6 +129,28 @@ variable "tags" {
   default     = {}
 }
 
+# --- route53 (module.route53) ---
+# Off by default until domain names are confirmed and any delegation they need (the registrar's
+# NS record for the apex) is actually in place.
+
+variable "enable_route53" {
+  type        = bool
+  description = "Whether to create this env's hosted zones. Leave false until domain names are confirmed and delegated."
+  default     = false
+}
+
+variable "hosted_zones" {
+  description = "Hosted zones to manage, keyed by an arbitrary logical name (not the domain itself — that's zone_name). parent_zone_name, if set to another zone's zone_name present in this same map, gets this zone's NS delegation record created automatically in that parent (modules/route53) instead of needing to be pasted in by hand. Flattened into modules/route53's zone-name-keyed shape in main.tf. Unused while enable_route53 is false."
+  type = map(object({
+    zone_name        = string
+    create_zone      = optional(bool, true)
+    comment          = optional(string, "")
+    tags             = optional(map(string), {})
+    parent_zone_name = optional(string, "")
+  }))
+  default = {}
+}
+
 # --- frontend (static SPA: S3 + CloudFront) ---
 
 variable "enable_frontend" {
@@ -268,16 +290,10 @@ variable "tenant_provisioning_source_dir" {
   description = "Absolute path to the published Thor.TenantProvisioning Lambda artifact (…/backend/functions/Thor.TenantProvisioning/publish). Required when enable_tenant_provisioning is true."
 }
 
-variable "tenant_provisioning_hosted_zone_id" {
-  type        = string
-  default     = ""
-  description = "Route53 hosted zone ID for tenant subdomains. Required when enable_tenant_provisioning is true."
-}
-
 variable "tenant_provisioning_base_domain" {
   type        = string
   default     = ""
-  description = "Base domain under which tenant subdomains are created (e.g. tenants.thor.example.com). Required when enable_tenant_provisioning is true."
+  description = "Base domain under which tenant subdomains are created (e.g. dev.thor.example.com). Must be the zone_name of a zone in hosted_zones — its hosted zone ID is what the configure-subdomain Lambda writes records into. Required when enable_tenant_provisioning is true."
 }
 
 variable "tenant_provisioning_dns_target" {

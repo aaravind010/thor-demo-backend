@@ -40,6 +40,7 @@ public sealed partial class PostgresTenantDatabaseProvisioner(
         //    the tables rw will later create (migrations run as rw).
         await using (var tenantDb = await OpenAsync(databaseName, cancellationToken))
         {
+            await ExecuteAsync(tenantDb, $"SET ROLE \"{rwRole}\";", cancellationToken);
             await ExecuteAsync(tenantDb, $"GRANT USAGE ON SCHEMA public TO \"{roRole}\";", cancellationToken);
             await ExecuteAsync(tenantDb, $"GRANT SELECT ON ALL TABLES IN SCHEMA public TO \"{roRole}\";", cancellationToken);
             await ExecuteAsync(tenantDb,
@@ -79,6 +80,11 @@ public sealed partial class PostgresTenantDatabaseProvisioner(
         {
             await ExecuteAsync(connection, $"CREATE ROLE \"{role}\" WITH LOGIN;", cancellationToken);
         }
+
+        // PG16+: CREATEROLE gives the creator ADMIN on the new role but not SET, and both
+        // CREATE DATABASE ... OWNER and SET ROLE below need SET. The creator holds ADMIN, so it
+        // can grant itself membership; re-running on retry just re-applies the option.
+        await ExecuteAsync(connection, $"GRANT \"{role}\" TO CURRENT_USER WITH SET TRUE;", cancellationToken);
 
         var rdsIamExists = await ScalarExistsAsync(connection, "SELECT 1 FROM pg_roles WHERE rolname = @name", "rds_iam", cancellationToken);
         if (rdsIamExists)

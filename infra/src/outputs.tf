@@ -68,6 +68,11 @@ output "task_role_arns" {
   value       = module.ecs.task_role_arns
 }
 
+output "route53_name_servers" {
+  description = "Map of zone name -> name servers for every zone module.route53 created — the apex zone's set is what goes into the registrar's NS record"
+  value       = var.enable_route53 ? module.route53[0].name_servers : null
+}
+
 output "frontend_bucket_name" {
   description = "S3 bucket the frontend deploy pipeline syncs to — set as thor-demo-frontend's S3_BUCKET_NAME GitHub Environment variable"
   value       = var.enable_frontend ? module.frontend[0].bucket_name : null
