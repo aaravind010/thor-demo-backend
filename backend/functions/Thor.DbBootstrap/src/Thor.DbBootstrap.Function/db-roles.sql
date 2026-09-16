@@ -15,10 +15,10 @@
 --   thor_app              runtime read of tenant routing
 --   thor_authorizer       authorizer's read-only subdomain -> routing lookup
 --
--- Table/schema grants are guarded so role creation always succeeds even on a brand-new cluster
--- whose Master migrations have not run yet; the grants apply once the tables exist (a later
--- re-invocation, after migrations, picks them up). Per-tenant tenant_<id>_rw/_ro roles are
--- created later by the provisioning workflow, not here.
+-- The Lambda applies the Master migrations before running this script, so the tables normally
+-- exist by now; the table/schema grants are still guarded so role creation succeeds even if a
+-- migration is ever missing (the grants then land on the next invocation). Per-tenant
+-- tenant_<id>_rw/_ro roles are created later by the provisioning workflow, not here.
 
 -- ── thor_provisioner ── DDL identity (create-tenant-database step only).
 --   CREATEDB + CREATEROLE      -> create each tenant database and its _rw/_ro roles

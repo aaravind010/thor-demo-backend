@@ -14,6 +14,9 @@ namespace Thor.DataLayer.Migrations.Master
             migrationBuilder.EnsureSchema(
                 name: "master");
 
+            migrationBuilder.EnsureSchema(
+                name: "auth");
+
             migrationBuilder.CreateTable(
                 name: "authentication_types",
                 schema: "master",

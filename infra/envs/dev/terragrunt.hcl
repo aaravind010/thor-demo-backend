@@ -127,7 +127,7 @@ inputs = {
   # Tenant records go into the hosted_zones entry whose zone_name matches this.
   tenant_provisioning_base_domain = "dev.hartech.online"
   # TODO: set to the API's public hostname (wildcard custom domain target) before enabling.
-  tenant_provisioning_dns_target = ""
+  tenant_provisioning_dns_target = "api.dev.hartech.online"
 
   tags = {}
 }

@@ -15,6 +15,10 @@
     <PackageReference Include="Npgsql" Version="10.0.3" />
   </ItemGroup>
   <ItemGroup>
+    <!-- Master DB migrations (MasterDbContext) — applied as master before the role script runs. -->
+    <ProjectReference Include="..\..\..\..\shared\Thor.DataLayer\Thor.DataLayer.csproj" />
+  </ItemGroup>
+  <ItemGroup>
     <EmbeddedResource Include="db-roles.sql" LogicalName="db-roles.sql" />
   </ItemGroup>
 </Project>

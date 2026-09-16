@@ -1,11 +1,12 @@
-# DB role bootstrap
+# DB bootstrap (Master migrations + roles)
 
-The least-privilege database roles the platform assumes at runtime are created by the
-**`Thor.DbBootstrap` Lambda** (`backend/functions/Thor.DbBootstrap`), not by a manual SQL run.
-Terraform's `db_bootstrap` module (`infra/src/modules/db_bootstrap`) deploys that Lambda in-VPC
-and invokes it at `apply` (via `aws_lambda_invocation`). There is **no** checked-in `db-roles.sql`
-to run by hand and **no** out-of-band step. The role/grant script is embedded in the Lambda
-(`.../Thor.DbBootstrap.Function/db-roles.sql`).
+The Master DB schema and the least-privilege database roles the platform assumes at runtime are
+both created by the **`Thor.DbBootstrap` Lambda** (`backend/functions/Thor.DbBootstrap`), not by
+a manual SQL run. Terraform's `db_bootstrap` module (`infra/src/modules/db_bootstrap`) deploys
+that Lambda in-VPC and invokes it at `apply` (via `aws_lambda_invocation`). Each invocation first
+applies the `MasterDbContext` EF Core migrations (`backend/shared/Thor.DataLayer/Migrations/Master`),
+then runs the embedded role/grant script (`.../Thor.DbBootstrap.Function/db-roles.sql`). There is
+**no** checked-in SQL to run by hand and **no** out-of-band step.
 
 | Role | Purpose | Grants |
 |------|---------|--------|
@@ -25,16 +26,17 @@ later by the provisioning workflow, not here.
   Aurora master credential is used. It reads that secret (by ARN) through the Secrets Manager VPC
   interface endpoint and opens **one** direct connection to the Aurora writer as master. Nothing
   outside the VPC ever touches the DB.
-- **Idempotent + self-triggering.** The embedded script uses `DO`-block existence checks for the
-  roles and `to_regclass(...)` guards for the table/schema grants, so it is safe to run before
-  **or** after the Master migrations and safe to re-run. The `aws_lambda_invocation` re-triggers on
-  the Lambda's `source_code_hash`, so any change to the roles/grants redeploys and re-applies
-  automatically on the next `apply`.
+- **Idempotent + self-triggering.** `MigrateAsync` applies only the migrations missing from
+  `master.__EFMigrationsHistory`; the embedded script uses `DO`-block existence checks for the
+  roles and `to_regclass(...)` guards for the table/schema grants. Both halves are safe to re-run.
+  The `aws_lambda_invocation` re-triggers on the Lambda's `source_code_hash`, so any change to the
+  roles/grants redeploys and re-applies automatically on the next `apply`.
 
 ## Migration ordering
 
-Role creation always succeeds. The table/schema **grants** only take effect once the Master
-migrations have created `auth.tenant` / `auth.tenant_routing` (and the `master` schema). On a
-brand-new cluster, run the migrations, then let the next `apply` re-invoke the bootstrap (or change
-the script) so the guarded grants apply. Automated migration apply is a separate, not-yet-wired
-step.
+Migrations run **before** the role script within the same invocation, so on a brand-new cluster a
+single `apply` yields the schema, the roles, and the table grants (which are guarded on
+`auth.tenant` / `auth.tenant_routing` existing). Note the publish hook only hashes each function's
+own `src/`: a change to a Master migration in `Thor.DataLayer` alone does not rebuild this Lambda —
+touch something under `Thor.DbBootstrap/src` (or delete its `.publish-hash`) to force the
+redeploy + re-invocation.
