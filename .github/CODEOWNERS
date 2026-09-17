@@ -1,0 +1,9 @@
+# The accounts listed in this file will be the default owners
+# for everything in the repo, they will be requested for a review for a PR
+@mark-skinner_Sphere @ashish-verma_Sphere @hap-wiggins_Sphere
+
+# The owners would all have to be on the same line using their GitHub username
+# You can also designate teams to be code owners, use the team name in GitHub
+* @SphereTechSol/thor
+
+# Check Confluence for a more detailed guide for other variations of establishing code owners

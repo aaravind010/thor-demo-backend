@@ -1,3 +1,14 @@
+terraform {
+  required_version = ">= 1.15"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 6.0"
+    }
+  }
+}
+
 data "aws_availability_zones" "available" {
   state = "available"
 }
@@ -23,7 +34,7 @@ locals {
   ]) : toset([])
 }
 
-resource "aws_vpc" "this" {
+resource "aws_vpc" "thor-vpc" {
   cidr_block           = var.vpc_cidr
   enable_dns_support   = true
   enable_dns_hostnames = true
@@ -33,18 +44,17 @@ resource "aws_vpc" "this" {
   })
 }
 
-resource "aws_internet_gateway" "this" {
-  vpc_id = aws_vpc.this.id
+resource "aws_internet_gateway" "thor-igw" {
+  vpc_id = aws_vpc.thor-vpc.id
 
   tags = merge(var.tags, {
     Name = "${local.name_prefix}-igw"
   })
 }
 
-# Public subnets — ALB + WAF at the edge only, per the platform's ingress design
 resource "aws_subnet" "public" {
   count                   = length(var.public_subnet_cidrs)
-  vpc_id                  = aws_vpc.this.id
+  vpc_id                  = aws_vpc.thor-vpc.id
   cidr_block              = var.public_subnet_cidrs[count.index]
   availability_zone       = local.azs[count.index]
   map_public_ip_on_launch = true
@@ -58,7 +68,7 @@ resource "aws_subnet" "public" {
 # Private subnets — ECS Fargate tasks, Aurora / RDS Proxy, Graph DB
 resource "aws_subnet" "private" {
   count             = length(var.private_subnet_cidrs)
-  vpc_id            = aws_vpc.this.id
+  vpc_id            = aws_vpc.thor-vpc.id
   cidr_block        = var.private_subnet_cidrs[count.index]
   availability_zone = local.azs[count.index]
 
@@ -69,11 +79,11 @@ resource "aws_subnet" "private" {
 }
 
 resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.this.id
+  vpc_id = aws_vpc.thor-vpc.id
 
   route {
     cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.this.id
+    gateway_id = aws_internet_gateway.thor-igw.id
   }
 
   tags = merge(var.tags, {
@@ -87,11 +97,9 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# No NAT Gateway route here by design — private subnets reach AWS services only
-# through VPC endpoints below, consistent with the platform's VPC-endpoint-only
-# egress model (no NAT Gateway egress).
+# No NAT Gateway route here by design — private subnets reach AWS services only through the VPC endpoints below.
 resource "aws_route_table" "private" {
-  vpc_id = aws_vpc.this.id
+  vpc_id = aws_vpc.thor-vpc.id
 
   tags = merge(var.tags, {
     Name = "${local.name_prefix}-private-rt"
@@ -109,7 +117,7 @@ resource "aws_security_group" "vpc_endpoints" {
   count       = var.enable_vpc_endpoints ? 1 : 0
   name        = "${local.name_prefix}-vpce-sg"
   description = "Allow HTTPS from within the VPC to interface endpoints"
-  vpc_id      = aws_vpc.this.id
+  vpc_id      = aws_vpc.thor-vpc.id
 
   ingress {
     description = "HTTPS from VPC CIDR"
@@ -134,7 +142,7 @@ resource "aws_security_group" "vpc_endpoints" {
 # S3 gateway endpoint — no hourly/data cost, used for ECR image layers, Terraform state, etc.
 resource "aws_vpc_endpoint" "s3" {
   count             = var.enable_vpc_endpoints ? 1 : 0
-  vpc_id            = aws_vpc.this.id
+  vpc_id            = aws_vpc.thor-vpc.id
   service_name      = "com.amazonaws.${data.aws_region.current.region}.s3"
   vpc_endpoint_type = "Gateway"
   route_table_ids   = [aws_route_table.private.id]
@@ -146,7 +154,7 @@ resource "aws_vpc_endpoint" "s3" {
 
 resource "aws_vpc_endpoint" "interface" {
   for_each            = local.interface_endpoints
-  vpc_id              = aws_vpc.this.id
+  vpc_id              = aws_vpc.thor-vpc.id
   service_name        = "com.amazonaws.${data.aws_region.current.region}.${each.value}"
   vpc_endpoint_type   = "Interface"
   subnet_ids          = aws_subnet.private[*].id

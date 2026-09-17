@@ -1,29 +1,32 @@
 name: Infra
 
-# Every PR touching infra/** (against dev, qa, or main) runs the same four
-# checks — init, validate, lint, plan — as four separate, individually
-# visible jobs; apply only ever runs on a push to dev/qa/main (i.e. after a
-# PR merges), automatically for dev and behind whatever required reviewers
-# are configured on qa-infra/prod-infra. pull_request and push are used to
-# distinguish preview-only from apply, not action/merged inspection on a
-# single event type — a merge fires both pull_request:closed and push for
-# the same change, so listening for both would double-apply; not listening
-# for pull_request:closed at all avoids that entirely.
-#
-# One file, no reusable workflow_call split — a PR/push only ever resolves
-# to one environment, so there was never a case where the job graph needed
-# to run more than once per trigger, unlike backend.yml's per-service calls.
+# Reviews and applies Terraform/Terragrunt changes for dev, qa, prod.
+# PR: read-only checks. Push: same checks, then applies — auto for dev, approval-gated for qa/prod via GitHub
+# Environments shared with backend deploy. Both triggers fire on a merge; only the push side applies.
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
     branches: [dev, qa, main]
-    paths: ["infra/**"]
+    paths: ["infra/**", "backend/functions/**"]
   push:
     branches: [dev, qa, main]
-    paths: ["infra/**"]
+    paths: ["infra/**", "backend/functions/**"]
 
-# Serializes runs per target branch (so two close-together dev pushes queue instead of racing) — the S3 backend's lockfile already prevents actual state corruption, this just avoids a losing run failing outright on a lock conflict. cancel-in-progress stays false: killing a run mid-apply could leave infrastructure partially applied.
+# JFROG_HOSTNAME / JFROG_STATE_BACKEND_REPOSITORY: required by root.hcl's get_env() (fails loud if unset).
+# TF_TOKEN_...: Terraform's login for that backend. JFROG_ACCESS_TOKEN / JFROG_USERNAME (from secrets.jf_api_thor
+# / vars.jf_usr_thor) and JFROG_LAMBDA_ARTIFACTS_REPOSITORY: used by publish-lambda-functions.sh's build cache.
+env:
+  DOTNET_VERSION: "10.0.100"
+  TF_TOKEN_sphereco_jfrog_io: ${{ secrets.jf_api_thor }}
+  JFROG_HOSTNAME: ${{ vars.JFROG_HOSTNAME }}
+  JFROG_STATE_BACKEND_REPOSITORY: ${{ vars.JFROG_STATE_BACKEND_REPOSITORY}}
+  JFROG_ACCESS_TOKEN: ${{ secrets.jf_api_thor }}
+  JFROG_USERNAME: ${{ vars.jf_usr_thor }}
+  JFROG_LAMBDA_ARTIFACTS_REPOSITORY: ${{ vars.JFROG_LAMBDA_ARTIFACTS_REPOSITORY }}
+  TG_NON_INTERACTIVE: "true"
+
+# One run per branch at a time; never cancels mid-run to avoid a half-applied state.
 concurrency:
   group: infra-${{ github.event_name == 'push' && github.ref_name || github.base_ref }}
   cancel-in-progress: false
@@ -41,141 +44,91 @@ jobs:
     steps:
       - id: set
         run: |
+          # Get the target branch: pushed branch on push, PR's base branch on pull_request.
           if [ "${{ github.event_name }}" = "push" ]; then
             BRANCH="${{ github.ref_name }}"
           else
             BRANCH="${{ github.base_ref }}"
           fi
 
+          # Map branch to environment name.
           if [ "$BRANCH" = "qa" ]; then
-            echo "environment=qa" >> "$GITHUB_OUTPUT"
+            ENVIRONMENT="qa"
           elif [ "$BRANCH" = "main" ]; then
-            echo "environment=prod" >> "$GITHUB_OUTPUT"
+            ENVIRONMENT="prod"
+          elif [ "$BRANCH" = "dev" ]; then
+            ENVIRONMENT="dev"
           else
-            echo "environment=dev" >> "$GITHUB_OUTPUT"
+            echo "::error::Unrecognized branch '$BRANCH' - expected dev, qa, or main." >&2
+            exit 1
           fi
 
-  init-terragrunt:
-    needs: context
-    runs-on: ubuntu-latest
-    environment: ${{ needs.context.outputs.environment }}-infra-plan
-    defaults:
-      run:
-        working-directory: infra/envs/${{ needs.context.outputs.environment }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "1.15.6"
-          terraform_wrapper: false
-
-      - name: Install Terragrunt
-        run: |
-          curl -sL -o /usr/local/bin/terragrunt "https://github.com/gruntwork-io/terragrunt/releases/download/v1.1.2/terragrunt_linux_amd64"
-          chmod +x /usr/local/bin/terragrunt
-
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
-
-      # Fast-fail gate — backend/auth problems surface here before lint/plan spend any time.
-      - name: terragrunt init
-        run: terragrunt init -no-color
+          echo "environment=${ENVIRONMENT}" >> "$GITHUB_OUTPUT"
 
   validate-terragrunt:
-    needs: [context, init-terragrunt]
+    needs: context
     runs-on: ubuntu-latest
-    environment: ${{ needs.context.outputs.environment }}-infra-plan
     defaults:
       run:
         working-directory: infra/envs/${{ needs.context.outputs.environment }}
     steps:
       - uses: actions/checkout@v4
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: ./.github/actions/terragrunt-setup
         with:
-          terraform_version: "1.15.6"
-          terraform_wrapper: false
-
-      - name: Install Terragrunt
-        run: |
-          curl -sL -o /usr/local/bin/terragrunt "https://github.com/gruntwork-io/terragrunt/releases/download/v1.1.2/terragrunt_linux_amd64"
-          chmod +x /usr/local/bin/terragrunt
-
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          role_arn: ${{ needs.context.outputs.environment == 'dev' && vars.DEV_AWS_ROLE_ARN || needs.context.outputs.environment == 'qa' && vars.QA_AWS_ROLE_ARN || needs.context.outputs.environment == 'prod' && vars.PROD_AWS_ROLE_ARN }}
+          region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          working_directory: infra/envs/${{ needs.context.outputs.environment }}
 
       - name: terragrunt validate
         run: terragrunt validate -no-color
 
-  lint-terragrunt:
-    needs: [context, validate-terragrunt]
-    runs-on: ubuntu-latest
-    # Not per-environment — hcl fmt checks the .hcl files under infra/ (root.hcl, envs/*/terragrunt.hcl); tflint checks the shared .tf module code under infra/src. Neither depends on which environment triggered this run.
-    steps:
-      - uses: actions/checkout@v4
-
-      # No setup-terraform/AWS credentials here — pure static analysis, no provider schema or backend access needed.
-      - name: Install Terragrunt
-        run: |
-          curl -sL -o /usr/local/bin/terragrunt "https://github.com/gruntwork-io/terragrunt/releases/download/v1.1.2/terragrunt_linux_amd64"
-          chmod +x /usr/local/bin/terragrunt
-
-      # Only touches *.hcl files (root.hcl, envs/*/terragrunt.hcl) — recursive by default, so this alone covers every environment's terragrunt.hcl, not just the triggering one.
+      # Recursive by default — covers root.hcl and every env's terragrunt.hcl, not just this one.
       - name: terragrunt hcl fmt --check
         working-directory: infra
         run: terragrunt hcl fmt --check
 
-      # Needs infra/src/.tflint.hcl enabling the AWS ruleset plugin — without it tflint only runs generic rules, not the AWS-specific ones reusable modules actually need checked.
+      # infra/src/.tflint.hcl enables the AWS ruleset plugin this needs.
       - uses: terraform-linters/setup-tflint@v4
         with:
           tflint_version: v0.64.0
 
+      # use GITHUB_TOKEN for authenticated requests
       - name: tflint
         working-directory: infra/src
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tflint --init
           tflint --recursive
 
   plan-terragrunt:
-    needs: [context, lint-terragrunt]
+    needs: [context, validate-terragrunt]
     runs-on: ubuntu-latest
-    environment: ${{ needs.context.outputs.environment }}-infra-plan
     defaults:
       run:
         working-directory: infra/envs/${{ needs.context.outputs.environment }}
     steps:
       - uses: actions/checkout@v4
 
-      - uses: hashicorp/setup-terraform@v3
+      # root.hcl's before_hook runs dotnet publish before plan/apply — needs the SDK first. Not needed by init/validate.
+      - uses: actions/setup-dotnet@v4
         with:
-          terraform_version: "1.15.6"
-          terraform_wrapper: false
+          dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Install Terragrunt
-        run: |
-          curl -sL -o /usr/local/bin/terragrunt "https://github.com/gruntwork-io/terragrunt/releases/download/v1.1.2/terragrunt_linux_amd64"
-          chmod +x /usr/local/bin/terragrunt
-
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+      - uses: ./.github/actions/terragrunt-setup
         with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          role_arn: ${{ needs.context.outputs.environment == 'dev' && vars.DEV_AWS_ROLE_ARN || needs.context.outputs.environment == 'qa' && vars.QA_AWS_ROLE_ARN || needs.context.outputs.environment == 'prod' && vars.PROD_AWS_ROLE_ARN }}
+          region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          working_directory: infra/envs/${{ needs.context.outputs.environment }}
 
-      # -out uses an absolute /tmp path, not a relative one — terragrunt actually runs terraform from a hashed .terragrunt-cache/... subdirectory, not from this working-directory, so a relative -out path would land somewhere inside that cache maze instead of somewhere upload-artifact can find it.
+      # Absolute /tmp path — terragrunt runs terraform from a hashed cache dir, not this working-directory.
       - name: terragrunt plan
         id: plan
         run: terragrunt plan -no-color -out=/tmp/tfplan.binary 2>&1 | tee /tmp/plan-output.txt
         continue-on-error: true
 
-      # Only a real plan file if the plan step actually succeeded — nothing to hand off otherwise. Both jobs are fresh runners, so this is how the plan crosses from one to the other, not a shared filesystem.
+      # Only uploaded on success — this is how the plan file crosses to apply-terragrunt's separate runner.
       - name: Upload plan file
         if: steps.plan.outcome == 'success'
         uses: actions/upload-artifact@v4
@@ -184,7 +137,27 @@ jobs:
           path: /tmp/tfplan.binary
           retention-days: 1
 
-      # Every listened-for pull_request type here is a live, open PR (closed isn't in the list) — on a push-triggered run this is simply skipped, no PR to comment on.
+      # apply doesn't rebuild the zip, so it must cross to apply-terragrunt too — tarred as one file for a reliable transfer.
+      - name: Tar lambda function build zips
+        if: steps.plan.outcome == 'success'
+        working-directory: ${{ github.workspace }}
+        run: |
+          if compgen -G "backend/functions/*/*.zip" > /dev/null; then
+            tar -czf /tmp/lambda-zips.tar.gz -C backend/functions .
+          else
+            echo "No lambda function zips found — nothing to tar (enable_authorizer is likely off for this environment)."
+          fi
+
+      - name: Upload lambda function build zips
+        if: steps.plan.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: lambda-zips-${{ needs.context.outputs.environment }}
+          path: /tmp/lambda-zips.tar.gz
+          retention-days: 1
+          if-no-files-found: ignore
+
+      # Skipped on push runs — no PR to comment on.
       - name: Post plan to PR
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
@@ -210,39 +183,95 @@ jobs:
 
   apply-terragrunt:
     needs: [context, plan-terragrunt]
-    # Explicit always() + a manual plan-terragrunt.result check, rather than relying on the implicit success-of-all-needs default, so this condition is the single source of truth for whether apply runs.
-    if: always() && github.event_name == 'push' && needs['plan-terragrunt'].result == 'success'
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    environment: ${{ needs.context.outputs.environment }}-infra
+    # Shared dev/qa/prod Environments with backend deploy — only qa/prod require review.
+    environment: ${{ needs.context.outputs.environment }}
     defaults:
       run:
         working-directory: infra/envs/${{ needs.context.outputs.environment }}
+    env:
+      # Skips root.hcl's before_hook rebuild — this job applies a saved plan and already restores the exact zip plan-terragrunt built, so no SDK/rebuild needed here at all.
+      SKIP_LAMBDA_PUBLISH: "true"
     steps:
       - uses: actions/checkout@v4
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: ./.github/actions/terragrunt-setup
         with:
-          terraform_version: "1.15.6"
-          terraform_wrapper: false
+          role_arn: ${{ needs.context.outputs.environment == 'dev' && vars.DEV_AWS_ROLE_ARN || needs.context.outputs.environment == 'qa' && vars.QA_AWS_ROLE_ARN || needs.context.outputs.environment == 'prod' && vars.PROD_AWS_ROLE_ARN }}
+          region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          working_directory: infra/envs/${{ needs.context.outputs.environment }}
 
-      - name: Install Terragrunt
-        run: |
-          curl -sL -o /usr/local/bin/terragrunt "https://github.com/gruntwork-io/terragrunt/releases/download/v1.1.2/terragrunt_linux_amd64"
-          chmod +x /usr/local/bin/terragrunt
-
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
-
-      # Downloads to /tmp, matching where plan-terragrunt wrote it — same reasoning as the plan step's -out path, an absolute path sidesteps terragrunt's .terragrunt-cache/... execution directory entirely.
+      # /tmp, matching where plan-terragrunt wrote it.
       - name: Download plan file
         uses: actions/download-artifact@v4
         with:
           name: tfplan-${{ needs.context.outputs.environment }}
           path: /tmp
 
-      # Applies the exact plan file plan-terragrunt produced — no -auto-approve needed, applying a saved plan is already non-interactive. If the underlying state changed since that plan was made, this fails with a stale-plan error instead of silently applying something different than what was reviewed.
+      # continue-on-error: no artifact exists when enable_authorizer was off for this plan, which is fine.
+      - name: Download lambda function build zips
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: lambda-zips-${{ needs.context.outputs.environment }}
+          path: /tmp
+
+      # Restores the same layout the tar step recorded; skips cleanly if nothing was downloaded.
+      - name: Untar lambda function build zips
+        working-directory: ${{ github.workspace }}
+        run: |
+          if [ -f /tmp/lambda-zips.tar.gz ]; then
+            tar -xzf /tmp/lambda-zips.tar.gz -C backend/functions
+          else
+            echo "No lambda-zips artifact downloaded — nothing to extract."
+          fi
+
+      # Applies the exact plan reviewed — fails as stale if state changed since, instead of applying something different.
       - name: terragrunt apply
         run: terragrunt apply -no-color /tmp/tfplan.binary
+
+  seed-ecr-placeholder:
+    needs: [context, apply-terragrunt]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    # Same environment apply-terragrunt used — no second reviewer prompt.
+    environment: ${{ needs.context.outputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/ecr-login
+        id: ecr
+        with:
+          role_arn: ${{ needs.context.outputs.environment == 'dev' && vars.DEV_AWS_ROLE_ARN || needs.context.outputs.environment == 'qa' && vars.QA_AWS_ROLE_ARN || needs.context.outputs.environment == 'prod' && vars.PROD_AWS_ROLE_ARN }}
+          region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      # linux/amd64: Fargate task defs default to X86_64. Only pushes to repos with zero images — never overwrites a real :latest.
+      - name: Seed any empty ECR repo with the placeholder image
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+          ENVIRONMENT: ${{ needs.context.outputs.environment }}
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          docker build --platform linux/amd64 -t placeholder placeholder-image/
+
+          for svc in thor-api task-api intelligence-engine; do
+            REPO="${svc}-${ENVIRONMENT}"
+
+            if ! aws ecr describe-repositories --repository-names "$REPO" --region "$AWS_REGION" >/dev/null 2>&1; then
+              echo "$REPO doesn't exist yet (enable_compute off, or repo not created) — skipping."
+              continue
+            fi
+
+            IMAGE_COUNT=$(aws ecr describe-images --repository-name "$REPO" --region "$AWS_REGION" --query 'length(imageDetails)' --output text 2>/dev/null || echo 0)
+            if [ "$IMAGE_COUNT" != "0" ]; then
+              echo "$REPO already has $IMAGE_COUNT image(s) — leaving it alone."
+              continue
+            fi
+
+            echo "$REPO is empty — pushing placeholder."
+            IMAGE="${REGISTRY}/${REPO}:latest"
+            docker tag placeholder "$IMAGE"
+            docker push "$IMAGE"
+          done
