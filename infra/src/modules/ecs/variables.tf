@@ -24,6 +24,11 @@ variable "enable_container_insights" {
   default     = true
 }
 
+variable "iam_permissions_boundary_arn" {
+  type        = string
+  description = "ARN of a Console-created thor-<environment>-role-boundary policy, expected to already exist per account — required on every thor-<environment>-* role's permissions_boundary argument, or the deploy role's own iam:CreateRole grant rejects the call."
+}
+
 variable "enable_compute" {
   type        = bool
   description = "Whether to create the ECS services (task defs, ECS services, NLB/target groups, per-service IAM/SG) for local.active_services. The cluster, Service Connect namespace, and ECR repos (ecr.tf) are created regardless — set false to bring up an environment's cluster/registry only, before real images exist."
@@ -31,10 +36,10 @@ variable "enable_compute" {
 }
 
 variable "services" {
-  description = "Per-service configuration, keyed by service name (thor, task-api, intelligence-engine). expose_publicly=true gets a private NLB (nlb.tf, thor only) reached via VPC Link from API Gateway, not directly from the internet; services with expose_publicly=false accept traffic only from the public services' security groups, reachable internally via Service Connect using the map key as the client_alias dns_name. deployment_strategy=BLUE_GREEN is a per-deploy toggle (deployment_strategy_plan.md reserves it for DB-schema-change deploys) — for a publicly-exposed service it shifts the NLB's production listener between blue/green target groups; for an internal service it's a plain task-set swap."
+  description = "Per-service configuration, keyed by service name (thor-api, task-api, intelligence-engine). expose_via_nlb=true gets a private NLB (nlb.tf, thor-api only) reached via VPC Link from API Gateway, not directly from the internet; services with expose_via_nlb=false accept traffic only from the public services' security groups, reachable internally via Service Connect using the map key as the client_alias dns_name. deployment_strategy=BLUE_GREEN is a per-deploy toggle (deployment_strategy_plan.md reserves it for DB-schema-change deploys) — for a publicly-exposed service it shifts the NLB's production listener between blue/green target groups; for an internal service it's a plain task-set swap."
   type = map(object({
-    container_image       = string
-    container_port        = optional(number, 8080)
+    container_image        = string
+    container_port         = optional(number, 8080)
     cpu                    = optional(number, 512)
     memory                 = optional(number, 1024)
     desired_count          = optional(number, 2)
@@ -44,8 +49,9 @@ variable "services" {
     log_retention_days     = optional(number, 30)
     environment_variables  = optional(map(string), {})
     secrets                = optional(map(string), {})
-    expose_publicly        = optional(bool, false)
+    expose_via_nlb         = optional(bool, false)
     nlb_listener_port      = optional(number, 80)
+    nlb_test_listener_port = optional(number, 8081)
     deployment_strategy    = optional(string, "ROLLING")
     bake_time_in_minutes   = optional(number, 5)
   }))
@@ -59,6 +65,12 @@ variable "services" {
     condition     = alltrue([for k, v in var.services : v.bake_time_in_minutes >= 0 && v.bake_time_in_minutes <= 1440])
     error_message = "bake_time_in_minutes must be between 0 and 1440 (24 hours) for every service."
   }
+}
+
+variable "nlb_certificate_arn" {
+  type        = string
+  description = "ACM certificate for the NLB's TLS listener (NLB <-> ECS re-encryption). \"\" (default) keeps the NLB on plain TCP and the publicly-exposed service's container healthcheck on plain HTTP — today's behavior. Set only where the re-encryption path is actually wanted."
+  default     = ""
 }
 
 variable "cross_account_pull_principal_arns" {

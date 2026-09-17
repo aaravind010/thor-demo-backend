@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="Thor.Auth.csproj" />
+  <Folder Name="/test/">
+    <Project Path="test/Thor.Auth.Test/Thor.Auth.Test.csproj" />
+  </Folder>
+</Solution>

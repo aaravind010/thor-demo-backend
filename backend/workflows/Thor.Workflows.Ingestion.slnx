@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="Abstractions/Thor.Workflows.Abstractions/Thor.Workflows.Abstractions.csproj" />
+  <Project Path="Abstractions/Thor.Workflows.Abstractions.Tests/Thor.Workflows.Abstractions.Tests.csproj" />
+  <Project Path="Thor.Workflows.Ingestion/Thor.Workflows.Ingestion.csproj" />
+  <Project Path="Thor.Workflows.Ingestion.Tests/Thor.Workflows.Ingestion.Tests.csproj" />
+</Solution>

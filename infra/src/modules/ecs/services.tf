@@ -4,11 +4,17 @@ locals {
   # Falls back to that service's own ECR repo at the "latest" tag when container_image is left blank.
   resolved_image = {
     for k, v in local.active_services : k =>
-      v.container_image != "" ? v.container_image : "${aws_ecr_repository.this[k].repository_url}:latest"
+    v.container_image != "" ? v.container_image : "${aws_ecr_repository.thor-ecr-repo[k].repository_url}:latest"
+  }
+
+  # thor-api's TLS follows the NLB's own state; internal services are always TLS.
+  container_tls_enabled = {
+    for k, v in local.active_services : k =>
+    v.expose_via_nlb ? local.nlb_tls_enabled : true
   }
 }
 
-resource "aws_cloudwatch_log_group" "this" {
+resource "aws_cloudwatch_log_group" "thor-svc-logs" {
   for_each = local.active_services
 
   name              = "/ecs/${var.environment}/${each.key}"
@@ -16,7 +22,7 @@ resource "aws_cloudwatch_log_group" "this" {
   tags              = var.tags
 }
 
-resource "aws_ecs_task_definition" "this" {
+resource "aws_ecs_task_definition" "thor-svc-taskdef" {
   for_each = local.active_services
 
   family                   = local.name_prefix[each.key]
@@ -41,17 +47,32 @@ resource "aws_ecs_task_definition" "this" {
         }
       ]
 
-      environment = [
-        for k, v in each.value.environment_variables : { name = k, value = v }
-      ]
+      environment = concat(
+        [for k, v in each.value.environment_variables : { name = k, value = v }],
+        # TLS cert path/password baked into the image by the Dockerfile's openssl step.
+        local.container_tls_enabled[each.key] ? (
+          each.key == "intelligence-engine" ? [
+            { name = "TLS_CERT_PATH", value = "/app/certs/server.crt" },
+            { name = "TLS_CERT_KEY_PATH", value = "/app/certs/server.key" },
+            ] : [
+            { name = "TLS_CERT_PFX_PATH", value = "/app/certs/server.pfx" },
+            { name = "TLS_CERT_PFX_PASSWORD", value = "thor-internal" },
+          ]
+        ) : []
+      )
 
       secrets = [
         for k, v in each.value.secrets : { name = k, valueFrom = v }
       ]
 
       # Lets ECS detect a hung-but-running container on task-api/intelligence-engine, which have no ALB health check; assumes the image has curl on PATH.
+      # -k skips validation of the self-signed cert.
       healthCheck = {
-        command     = ["CMD-SHELL", "curl -f http://localhost:${each.value.container_port}${each.value.health_check_path} || exit 1"]
+        command = local.container_tls_enabled[each.key] ? [
+          "CMD-SHELL", "curl -k -f https://localhost:${each.value.container_port}${each.value.health_check_path} || exit 1"
+          ] : [
+          "CMD-SHELL", "curl -f http://localhost:${each.value.container_port}${each.value.health_check_path} || exit 1"
+        ]
         interval    = 30
         timeout     = 5
         retries     = 3
@@ -61,7 +82,7 @@ resource "aws_ecs_task_definition" "this" {
       logConfiguration = {
         logDriver = "awslogs"
         options = {
-          "awslogs-group"         = aws_cloudwatch_log_group.this[each.key].name
+          "awslogs-group"         = aws_cloudwatch_log_group.thor-svc-logs[each.key].name
           "awslogs-region"        = data.aws_region.current.region
           "awslogs-stream-prefix" = each.key
         }
@@ -72,12 +93,12 @@ resource "aws_ecs_task_definition" "this" {
   tags = var.tags
 }
 
-resource "aws_ecs_service" "this" {
+resource "aws_ecs_service" "thor-svc" {
   for_each = local.active_services
 
   name            = each.key
-  cluster         = aws_ecs_cluster.this.id
-  task_definition = aws_ecs_task_definition.this[each.key].arn
+  cluster         = aws_ecs_cluster.thor-ecs-cluster.id
+  task_definition = aws_ecs_task_definition.thor-svc-taskdef[each.key].arn
   desired_count   = each.value.desired_count
   launch_type     = "FARGATE"
 
@@ -97,17 +118,17 @@ resource "aws_ecs_service" "this" {
   }
 
   dynamic "load_balancer" {
-    for_each = each.value.expose_publicly ? [1] : []
+    for_each = each.value.expose_via_nlb ? [1] : []
     content {
-      target_group_arn = aws_lb_target_group.this[each.key].arn
-      container_name    = each.key
-      container_port    = each.value.container_port
+      target_group_arn = aws_lb_target_group.thor-nlb-tg-blue[each.key].arn
+      container_name   = each.key
+      container_port   = each.value.container_port
 
       dynamic "advanced_configuration" {
         for_each = each.value.deployment_strategy == "BLUE_GREEN" ? [1] : []
         content {
-          alternate_target_group_arn = aws_lb_target_group.green[each.key].arn
-          production_listener_rule   = aws_lb_listener.production[each.key].arn
+          alternate_target_group_arn = aws_lb_target_group.thor-nlb-tg-green[each.key].arn
+          production_listener_rule   = aws_lb_listener.thor-nlb-listener[each.key].arn
           role_arn                   = aws_iam_role.blue_green[each.key].arn
         }
       }
@@ -126,7 +147,7 @@ resource "aws_ecs_service" "this" {
 
   service_connect_configuration {
     enabled   = true
-    namespace = aws_service_discovery_http_namespace.this.arn
+    namespace = aws_service_discovery_http_namespace.thor-sc-namespace.arn
 
     service {
       port_name      = "app"
@@ -139,13 +160,14 @@ resource "aws_ecs_service" "this" {
     }
   }
 
-  # CI/CD updates task_definition/desired_count on every deploy, and native blue/green swaps which target group is primary between deployments — Terraform must not fight either.
+  # CI/CD updates task_definition/desired_count — Terraform must ignore both.
+  # load_balancer temporarily NOT ignored: needed for one apply so a deployment_strategy change (e.g. ROLLING -> BLUE_GREEN) can actually push its required advanced_configuration through. Re-add load_balancer here once this apply succeeds, since blue/green's live primary-target-group swap needs it ignored again afterward.
   lifecycle {
-    ignore_changes = [task_definition, desired_count, load_balancer]
+    ignore_changes = [task_definition, desired_count]
   }
 
-  # Depends on all instances of aws_lb_listener.production, which is zero for services with no listener — no conditional needed.
-  depends_on = [aws_lb_listener.production]
+  # Depends on all instances of aws_lb_listener.thor-nlb-listener, which is zero for services with no listener — no conditional needed.
+  depends_on = [aws_lb_listener.thor-nlb-listener]
 
   tags = var.tags
 }

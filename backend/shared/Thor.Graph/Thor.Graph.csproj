@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Thor.Graph</RootNamespace>
+    <AssemblyName>Thor.Graph</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <PackageId>Thor.Graph</PackageId>
+    <Version>0.1.0</Version>
+    <Description>Shared Neptune/Gremlin client — tenant-partitioned vertex/edge upsert primitives (see ADR §6.1).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Gremlin.Net" Version="3.8.1" />
+  </ItemGroup>
+
+</Project>

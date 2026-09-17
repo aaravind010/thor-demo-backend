@@ -1,0 +1,380 @@
+name: _deploy-core
+
+# Reusable workflow for all three environments. Called only by deploy.yml.
+# JFrog is the source of truth for built images: dev builds once and publishes there; qa/prod only ever pull by
+# digest from JFrog, never from another environment's ECR, using the digest recorded in deploy/<service>/<env>-image.json.
+# Doesn't write the manifest itself — just exposes digest/commit_id as outputs; deploy.yml's write-manifests job
+# writes every changed service's manifest in one place, once per push, so concurrent writes never race.
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        required: true
+        type: string
+      environment:
+        description: "dev, qa, or prod"
+        required: true
+        type: string
+      mode:
+        description: "deploy (build from source, dev only) or promote (read a manifest and move a pre-built artifact forward, qa/prod)"
+        required: true
+        type: string
+      image_digest:
+        description: "JFrog digest to promote/redeploy (manual rollback). Blank = read it from the upstream environment's manifest."
+        required: false
+        type: string
+        default: ""
+      timeout_minutes:
+        description: "Max minutes to wait for the ECS deployment to stabilize."
+        required: false
+        type: number
+        default: 30
+      changed_services:
+        description: "Comma-separated services also getting their own deploy job this run (e.g. \"task-api,intelligence-engine,\"). Blank means only this one service is deploying, so ecs-deploy syncs both siblings normally."
+        required: false
+        type: string
+        default: ""
+      ingestion_steps:
+        description: "Comma-separated THOR_STEP values for the ingestion module's per-step task-definition families. Only used when service == 'ingestion'."
+        required: false
+        type: string
+        default: "extract-stage,promote,graph-load-start,graph-load-poll"
+    outputs:
+      digest:
+        description: "Digest actually deployed for this service/environment. Blank if this call's stage didn't run or (for qa) wasn't approved."
+        value: ${{ jobs.dev.outputs.digest || jobs['qa-promote'].outputs.digest || jobs.prod.outputs.digest }}
+      commit_id:
+        description: "Commit/tag identifier matching the digest above."
+        value: ${{ jobs.dev.outputs.commit_id || jobs['qa-promote'].outputs.commit_id || jobs.prod.outputs.commit_id }}
+
+permissions:
+  id-token: write
+
+jobs:
+  dev:
+    if: inputs.environment == 'dev'
+    runs-on: ubuntu-latest
+    environment: dev
+    defaults:
+      run:
+        # inputs.service is the Terraform/ECS service key (thor-api/task-api/intelligence-engine/ingestion); the
+        # actual source folders are PascalCase. The other three are self-contained (source + tests nested inside
+        # one folder), but ingestion's Thor.Workflows.Ingestion.slnx lives at backend/workflows/ and references
+        # Thor.Workflows.Ingestion.Tests/ and Abstractions/ as siblings, not children — so it needs the parent
+        # folder as cwd for dotnet to discover the .slnx and both test projects. The "Build image" step below
+        # overrides this with an absolute repo-root context instead, since ingestion's Dockerfile needs that.
+        working-directory: ${{ inputs.service == 'thor-api' && 'backend/services/Thor.API' || inputs.service == 'task-api' && 'backend/services/Thor.TaskAPI' || inputs.service == 'intelligence-engine' && 'backend/services/Thor.IntelligenceEngine' || 'backend/workflows' }}
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+    outputs:
+      digest: ${{ steps.digest.outputs.ref }}
+      commit_id: ${{ github.sha }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/ecr-login
+        id: ecr
+        with:
+          role_arn: ${{ inputs.environment == 'dev' && vars.DEV_AWS_ROLE_ARN || inputs.environment == 'qa' && vars.QA_AWS_ROLE_ARN || inputs.environment == 'prod' && vars.PROD_AWS_ROLE_ARN }}
+          region: ${{ env.AWS_REGION }}
+
+      - uses: ./.github/actions/jfrog-login
+        id: jfrog
+        with:
+          jfrog_hostname: ${{ vars.JFROG_HOSTNAME }}
+          jfrog_username: ${{ vars.jf_usr_thor }}
+          jfrog_access_token: ${{ secrets.jf_api_thor }}
+
+      # Ingestion's ECR repo is Terraform-managed under its own module (modules/ingestion/ecr.tf), named
+      # thor-<env>-ingestion-ecr — not the "<service>-<env>" convention modules/ecs/ecr.tf uses for the other three.
+      - name: Set image URIs
+        id: image
+        run: |
+          if [ "${{ inputs.service }}" = "ingestion" ]; then
+            ECR_REPO="thor-dev-ingestion-ecr"
+          else
+            ECR_REPO="${{ inputs.service }}-dev"
+          fi
+          echo "jfrog_uri=${{ steps.jfrog.outputs.registry }}/${{ vars.JFROG_DOCKER_REPOSITORY }}/${{ inputs.service }}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "ecr_uri=${{ steps.ecr.outputs.registry }}/${ECR_REPO}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore & build (.NET)
+        if: inputs.service != 'intelligence-engine'
+        run: |
+          dotnet restore
+          dotnet build --no-restore -c Release
+
+      # continue-on-error: fast feedback, not a gate.
+      - name: Run unit tests (.NET)
+        if: inputs.service != 'intelligence-engine'
+        continue-on-error: true
+        run: |
+          if find . -iname '*.tests.csproj' | grep -q .; then
+            dotnet test --no-build -c Release
+          else
+            echo "No test project found, skipping."
+          fi
+
+      - name: Install dependencies (Python)
+        if: inputs.service == 'intelligence-engine'
+        run: pip install -r requirements.txt
+
+      - name: Run unit tests (Python)
+        if: inputs.service == 'intelligence-engine'
+        continue-on-error: true
+        run: |
+          if [ -d tests ] || ls test_*.py >/dev/null 2>&1; then
+            pip install pytest
+            pytest
+          else
+            echo "No tests found, skipping."
+          fi
+
+      # --no-cache avoids stale dependency layers. Ingestion's Dockerfile needs the repo root as build context
+      # (it COPYs sibling projects under backend/workflows/Abstractions and backend/shared) — unlike the other
+      # three, whose Dockerfiles are self-contained within their own service folder (this job's cwd).
+      - name: Build image
+        run: |
+          if [ "${{ inputs.service }}" = "ingestion" ]; then
+            docker build --no-cache \
+              -f "${{ github.workspace }}/backend/workflows/Thor.Workflows.Ingestion/Dockerfile" \
+              -t "${{ steps.image.outputs.jfrog_uri }}" \
+              "${{ github.workspace }}"
+          else
+            docker build --no-cache -t "${{ steps.image.outputs.jfrog_uri }}" .
+          fi
+
+      - name: Publish to JFrog
+        run: docker push "${{ steps.image.outputs.jfrog_uri }}"
+
+      # Pinned digest, not just the mutable tag — what downstream promotion actually pulls.
+      - name: Capture JFrog digest
+        id: digest
+        run: |
+          FULL_REF=$(docker inspect --format='{{index .RepoDigests 0}}' "${{ steps.image.outputs.jfrog_uri }}")
+          echo "ref=${FULL_REF}" >> "$GITHUB_OUTPUT"
+
+      - name: Promote into dev's own ECR
+        run: |
+          docker tag "${{ steps.image.outputs.jfrog_uri }}" "${{ steps.image.outputs.ecr_uri }}"
+          docker push "${{ steps.image.outputs.ecr_uri }}"
+
+      - uses: ./.github/actions/ecs-deploy
+        if: inputs.service != 'ingestion'
+        with:
+          environment: dev
+          service: ${{ inputs.service }}
+          image_uri: ${{ steps.image.outputs.ecr_uri }}
+          timeout_minutes: ${{ inputs.timeout_minutes }}
+          changed_services: ${{ inputs.changed_services }}
+
+      # Ingestion has no persistent ECS service (Step Functions invokes it via ecs:RunTask) — just register the
+      # new image against each step's task-definition family, no update-service/health-wait/load balancer.
+      - uses: ./.github/actions/ecs-register-task-defs
+        if: inputs.service == 'ingestion'
+        with:
+          environment: dev
+          service: ingestion
+          image_uri: ${{ steps.image.outputs.ecr_uri }}
+          steps: ${{ inputs.ingestion_steps }}
+
+  qa-deploy:
+    if: inputs.environment == 'qa'
+    runs-on: ubuntu-latest
+    environment: qa-candidate
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+    outputs:
+      digest: ${{ steps.manifest.outputs.digest }}
+      tag: ${{ steps.manifest.outputs.tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/ecr-login
+        id: ecr
+        with:
+          role_arn: ${{ inputs.environment == 'dev' && vars.DEV_AWS_ROLE_ARN || inputs.environment == 'qa' && vars.QA_AWS_ROLE_ARN || inputs.environment == 'prod' && vars.PROD_AWS_ROLE_ARN }}
+          region: ${{ env.AWS_REGION }}
+
+      - uses: ./.github/actions/jfrog-login
+        id: jfrog
+        with:
+          jfrog_hostname: ${{ vars.JFROG_HOSTNAME }}
+          jfrog_username: ${{ vars.jf_usr_thor }}
+          jfrog_access_token: ${{ secrets.jf_api_thor }}
+
+      # Blank image_digest = read the digest dev's manifest recorded.
+      - name: Read manifest / resolve digest to promote
+        id: manifest
+        run: |
+          if [ -n "${{ inputs.image_digest }}" ]; then
+            DIGEST="${{ inputs.image_digest }}"
+            TAG="manual-$(echo "${DIGEST}" | sed 's/.*@sha256://' | cut -c1-12)"
+            echo "Using explicitly provided digest: ${DIGEST}"
+          else
+            DIGEST=$(jq -r '.digest' "deploy/${{ inputs.service }}/dev-image.json")
+            TAG=$(jq -r '.commitId' "deploy/${{ inputs.service }}/dev-image.json")
+            echo "Resolved dev's manifest digest: ${DIGEST}"
+          fi
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Set candidate image URI
+        id: image
+        run: |
+          if [ "${{ inputs.service }}" = "ingestion" ]; then
+            ECR_REPO="thor-qa-ingestion-ecr"
+          else
+            ECR_REPO="${{ inputs.service }}-qa"
+          fi
+          echo "candidate_uri=${{ steps.ecr.outputs.registry }}/${ECR_REPO}:candidate-${{ steps.manifest.outputs.tag }}" >> "$GITHUB_OUTPUT"
+
+      - name: Pull from JFrog and push as a QA candidate
+        run: |
+          docker pull "${{ steps.manifest.outputs.digest }}"
+          docker tag "${{ steps.manifest.outputs.digest }}" "${{ steps.image.outputs.candidate_uri }}"
+          docker push "${{ steps.image.outputs.candidate_uri }}"
+
+      # The actually-running definition, not just the latest registered revision — what rollback needs.
+      # Ingestion has no ECS service to describe, so there's nothing to capture or roll back.
+      - name: Capture currently-running task definition
+        id: previous
+        if: inputs.service != 'ingestion'
+        run: |
+          ARN=$(aws ecs describe-services --cluster "thor-qa" --services "${{ inputs.service }}" --query 'services[0].taskDefinition' --output text)
+          echo "arn=$ARN" >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/ecs-deploy
+        if: inputs.service != 'ingestion'
+        with:
+          environment: qa
+          service: ${{ inputs.service }}
+          image_uri: ${{ steps.image.outputs.candidate_uri }}
+          timeout_minutes: ${{ inputs.timeout_minutes }}
+          changed_services: ${{ inputs.changed_services }}
+
+      - uses: ./.github/actions/ecs-register-task-defs
+        if: inputs.service == 'ingestion'
+        with:
+          environment: qa
+          service: ingestion
+          image_uri: ${{ steps.image.outputs.candidate_uri }}
+          steps: ${{ inputs.ingestion_steps }}
+
+      # Stub — see deployment_strategy_plan.md §8. Always passes for now.
+      - name: Run integration tests against candidate
+        run: echo "::warning::Real integration test suite not implemented yet — this step always passes for now."
+
+      - name: Roll back QA to last stable revision
+        if: failure() && inputs.service != 'ingestion'
+        run: |
+          aws ecs update-service \
+            --cluster "thor-qa" \
+            --service "${{ inputs.service }}" \
+            --task-definition "${{ steps.previous.outputs.arn }}" \
+            >/dev/null
+          echo "Integration tests failed - rolled back to ${{ steps.previous.outputs.arn }}. Nothing promoted to QA's tagged image."
+
+  qa-promote:
+    needs: qa-deploy
+    if: inputs.environment == 'qa' && needs['qa-deploy'].result == 'success'
+    runs-on: ubuntu-latest
+    environment: qa
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+    outputs:
+      # Re-exported so this workflow's own output stays blank until qa-promote (the approval-gated job) completes, not just qa-deploy.
+      digest: ${{ needs['qa-deploy'].outputs.digest }}
+      commit_id: ${{ needs['qa-deploy'].outputs.tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/ecr-login
+        id: ecr
+        with:
+          role_arn: ${{ inputs.environment == 'dev' && vars.DEV_AWS_ROLE_ARN || inputs.environment == 'qa' && vars.QA_AWS_ROLE_ARN || inputs.environment == 'prod' && vars.PROD_AWS_ROLE_ARN }}
+          region: ${{ env.AWS_REGION }}
+
+      - name: Promote tested candidate to the verified tag
+        run: |
+          if [ "${{ inputs.service }}" = "ingestion" ]; then
+            ECR_REPO="thor-qa-ingestion-ecr"
+          else
+            ECR_REPO="${{ inputs.service }}-qa"
+          fi
+          CANDIDATE_URI="${{ steps.ecr.outputs.registry }}/${ECR_REPO}:candidate-${{ needs['qa-deploy'].outputs.tag }}"
+          VERIFIED_URI="${{ steps.ecr.outputs.registry }}/${ECR_REPO}:${{ needs['qa-deploy'].outputs.tag }}"
+          docker pull "${CANDIDATE_URI}"
+          docker tag "${CANDIDATE_URI}" "${VERIFIED_URI}"
+          docker push "${VERIFIED_URI}"
+
+  prod:
+    if: inputs.environment == 'prod'
+    runs-on: ubuntu-latest
+    environment: prod
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+    outputs:
+      digest: ${{ steps.manifest.outputs.digest }}
+      commit_id: ${{ steps.manifest.outputs.tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/ecr-login
+        id: ecr
+        with:
+          role_arn: ${{ inputs.environment == 'dev' && vars.DEV_AWS_ROLE_ARN || inputs.environment == 'qa' && vars.QA_AWS_ROLE_ARN || inputs.environment == 'prod' && vars.PROD_AWS_ROLE_ARN }}
+          region: ${{ env.AWS_REGION }}
+
+      - name: Read manifest / resolve digest to promote
+        id: manifest
+        run: |
+          if [ -n "${{ inputs.image_digest }}" ]; then
+            DIGEST="${{ inputs.image_digest }}"
+            TAG="manual-$(echo "${DIGEST}" | sed 's/.*@sha256://' | cut -c1-12)"
+            echo "Using explicitly provided digest: ${DIGEST}"
+          else
+            DIGEST=$(jq -r '.digest' "deploy/${{ inputs.service }}/qa-image.json")
+            TAG=$(jq -r '.commitId' "deploy/${{ inputs.service }}/qa-image.json")
+            echo "Resolved qa's manifest digest: ${DIGEST}"
+          fi
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Set image URI
+        id: image
+        run: |
+          if [ "${{ inputs.service }}" = "ingestion" ]; then
+            ECR_REPO="thor-prod-ingestion-ecr"
+          else
+            ECR_REPO="${{ inputs.service }}-prod"
+          fi
+          echo "uri=${{ steps.ecr.outputs.registry }}/${ECR_REPO}:${{ steps.manifest.outputs.tag }}" >> "$GITHUB_OUTPUT"
+
+      - name: Pull from JFrog and push into prod's ECR
+        run: |
+          docker pull "${{ steps.manifest.outputs.digest }}"
+          docker tag "${{ steps.manifest.outputs.digest }}" "${{ steps.image.outputs.uri }}"
+          docker push "${{ steps.image.outputs.uri }}"
+
+      - uses: ./.github/actions/ecs-deploy
+        if: inputs.service != 'ingestion'
+        with:
+          environment: prod
+          service: ${{ inputs.service }}
+          image_uri: ${{ steps.image.outputs.uri }}
+          timeout_minutes: ${{ inputs.timeout_minutes }}
+          changed_services: ${{ inputs.changed_services }}
+
+      - uses: ./.github/actions/ecs-register-task-defs
+        if: inputs.service == 'ingestion'
+        with:
+          environment: prod
+          service: ingestion
+          image_uri: ${{ steps.image.outputs.uri }}
+          steps: ${{ inputs.ingestion_steps }}

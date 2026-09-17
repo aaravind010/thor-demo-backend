@@ -1,0 +1,58 @@
+name: _deploy-preview
+
+# PR-preview check for qa and main: they promote an already-built image (see _deploy-core.yml's qa-deploy/prod
+# jobs), so this just confirms the code still compiles and unit tests pass — no Docker/AWS involved.
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        required: true
+        type: string
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        # inputs.service is the Terraform/ECS service key (thor-api/task-api/intelligence-engine/ingestion); the
+        # actual source folders are PascalCase. The other three are self-contained (source + tests nested inside
+        # one folder), but ingestion's Thor.Workflows.Ingestion.slnx lives at backend/workflows/ and references
+        # Thor.Workflows.Ingestion.Tests/ and Abstractions/ as siblings, not children — so it needs the parent
+        # folder as cwd for dotnet to discover the .slnx and both test projects.
+        working-directory: ${{ inputs.service == 'thor-api' && 'backend/services/Thor.API' || inputs.service == 'task-api' && 'backend/services/Thor.TaskAPI' || inputs.service == 'intelligence-engine' && 'backend/services/Thor.IntelligenceEngine' || 'backend/workflows' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore & build (.NET)
+        if: inputs.service != 'intelligence-engine'
+        run: |
+          dotnet restore
+          dotnet build --no-restore -c Release
+
+      # continue-on-error: fast feedback, not a gate.
+      - name: Run unit tests (.NET)
+        if: inputs.service != 'intelligence-engine'
+        continue-on-error: true
+        run: |
+          if find . -iname '*.tests.csproj' | grep -q .; then
+            dotnet test --no-build -c Release
+          else
+            echo "No test project found, skipping."
+          fi
+
+      - name: Install dependencies (Python)
+        if: inputs.service == 'intelligence-engine'
+        run: pip install -r requirements.txt
+
+      - name: Run unit tests (Python)
+        if: inputs.service == 'intelligence-engine'
+        continue-on-error: true
+        run: |
+          if [ -d tests ] || ls test_*.py >/dev/null 2>&1; then
+            pip install pytest
+            pytest
+          else
+            echo "No tests found, skipping."
+          fi

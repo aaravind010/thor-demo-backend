@@ -1,51 +1,38 @@
-# Catch-all proxy — forwards every path/method through the VPC Link to the NLB, which forwards to thor. No Cognito/Lambda authorizer wired in yet (authorization = "NONE"), since neither exists in this repo yet — this must be locked down before any real traffic reaches it.
+# Catch-all proxy — forwards every path/method through the VPC Link to the NLB, which forwards to thor.
 
-resource "aws_api_gateway_resource" "proxy" {
-  rest_api_id = aws_api_gateway_rest_api.this.id
-  parent_id   = aws_api_gateway_rest_api.this.root_resource_id
-  path_part   = "{proxy+}"
-}
+resource "aws_apigatewayv2_integration" "proxy" {
+  api_id = aws_apigatewayv2_api.thor-apigw-api.id
 
-resource "aws_api_gateway_method" "proxy_root" {
-  rest_api_id   = aws_api_gateway_rest_api.this.id
-  resource_id   = aws_api_gateway_rest_api.this.root_resource_id
-  http_method   = "ANY"
-  authorization = "NONE"
-}
+  integration_type       = "HTTP_PROXY"
+  integration_method     = "ANY"
+  connection_type        = "VPC_LINK"
+  connection_id          = aws_apigatewayv2_vpc_link.thor-apigw-vpclink.id
+  integration_uri        = var.nlb_listener_arn
+  payload_format_version = "1.0"
 
-resource "aws_api_gateway_method" "proxy" {
-  rest_api_id   = aws_api_gateway_rest_api.this.id
-  resource_id   = aws_api_gateway_resource.proxy.id
-  http_method   = "ANY"
-  authorization = "NONE"
-
-  request_parameters = {
-    "method.request.path.proxy" = true
+  # Must agree with the NLB's own TLS state — plain HTTP unless a real cert is configured there too.
+  dynamic "tls_config" {
+    for_each = var.tls_server_name != "" ? [1] : []
+    content {
+      server_name_to_verify = var.tls_server_name
+    }
   }
 }
 
-resource "aws_api_gateway_integration" "proxy_root" {
-  rest_api_id             = aws_api_gateway_rest_api.this.id
-  resource_id              = aws_api_gateway_rest_api.this.root_resource_id
-  http_method              = aws_api_gateway_method.proxy_root.http_method
-  integration_http_method  = "ANY"
-  type                     = "HTTP_PROXY"
-  connection_type          = "VPC_LINK"
-  connection_id            = aws_api_gateway_vpc_link.this.id
-  uri                      = "http://${var.nlb_dns_name}:${var.nlb_listener_port}/"
+resource "aws_apigatewayv2_route" "proxy_root" {
+  api_id    = aws_apigatewayv2_api.thor-apigw-api.id
+  route_key = "ANY /"
+  target    = "integrations/${aws_apigatewayv2_integration.proxy.id}"
+
+  authorization_type = "CUSTOM"
+  authorizer_id      = aws_apigatewayv2_authorizer.thor-api-key.id
 }
 
-resource "aws_api_gateway_integration" "proxy" {
-  rest_api_id              = aws_api_gateway_rest_api.this.id
-  resource_id              = aws_api_gateway_resource.proxy.id
-  http_method              = aws_api_gateway_method.proxy.http_method
-  integration_http_method  = "ANY"
-  type                     = "HTTP_PROXY"
-  connection_type          = "VPC_LINK"
-  connection_id            = aws_api_gateway_vpc_link.this.id
-  uri                      = "http://${var.nlb_dns_name}:${var.nlb_listener_port}/{proxy}"
+resource "aws_apigatewayv2_route" "proxy" {
+  api_id    = aws_apigatewayv2_api.thor-apigw-api.id
+  route_key = "ANY /{proxy+}"
+  target    = "integrations/${aws_apigatewayv2_integration.proxy.id}"
 
-  request_parameters = {
-    "integration.request.path.proxy" = "method.request.path.proxy"
-  }
+  authorization_type = "CUSTOM"
+  authorizer_id      = aws_apigatewayv2_authorizer.thor-api-key.id
 }

@@ -1,0 +1,35 @@
+name: ECS register task definitions
+description: >
+  Registers a new task-definition revision per THOR_STEP family, patching only the image.
+  For RunTask/Step-Functions-invoked modules (e.g. ingestion) that have no persistent ECS
+  service — no update-service call, no load balancer, no health-wait loop, since nothing
+  is "running" to stabilize.
+
+inputs:
+  environment:
+    required: true
+  service:
+    required: true
+  image_uri:
+    required: true
+  steps:
+    description: "Comma-separated THOR_STEP values, each its own task-definition family: thor-<environment>-<service>-<step>"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        IFS=',' read -ra STEPS <<< "${{ inputs.steps }}"
+
+        for STEP in "${STEPS[@]}"; do
+          FAMILY="thor-${{ inputs.environment }}-${{ inputs.service }}-${STEP}"
+
+          CURRENT_TASK_DEF=$(aws ecs describe-task-definition --task-definition "$FAMILY" --query 'taskDefinition' --output json)
+          NEW_TASK_DEF=$(echo "$CURRENT_TASK_DEF" | jq --arg IMAGE "${{ inputs.image_uri }}" \
+            '.containerDefinitions[0].image = $IMAGE | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)')
+          NEW_ARN=$(aws ecs register-task-definition --cli-input-json "$NEW_TASK_DEF" --query 'taskDefinition.taskDefinitionArn' --output text)
+
+          echo "[$FAMILY] Registered $NEW_ARN"
+        done

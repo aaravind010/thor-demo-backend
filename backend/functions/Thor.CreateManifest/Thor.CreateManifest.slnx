@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Thor.CreateManifest.Core/Thor.CreateManifest.Core.csproj" />
+    <Project Path="src/Thor.CreateManifest.Function/Thor.CreateManifest.Function.csproj" />
+  </Folder>
+  <Folder Name="/test/">
+    <Project Path="test/Thor.CreateManifest.Test/Thor.CreateManifest.Test.csproj" />
+  </Folder>
+</Solution>
