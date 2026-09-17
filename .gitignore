@@ -1,0 +1,9 @@
+# .NET build output
+bin/
+obj/
+publish/
+*-build.zip
+.publish-hash
+
+# OS
+.DS_Store
