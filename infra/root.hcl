@@ -4,13 +4,15 @@ locals {
   account_map = {
     dev = {
       account_name = "dev" # Account A, shared with qa
-      account_id   = "877969058937"
-      aws_region   = "us-east-1"
+      account_id   = "853973692277"
+      aws_region   = "us-west-2"
+      state_region = "us-east-1"
     }
     qa = {
       account_name = "qa" # Account A, shared with dev
-      account_id   = "877969058937"
-      aws_region   = "us-east-1"
+      account_id   = "853973692277"
+      aws_region   = "us-west-2"
+      state_region = "us-east-1"
     }
     prod = {
       account_name = "prod" # Account B, isolated from dev/qa
@@ -21,26 +23,24 @@ locals {
 
   account = local.account_map[local.environment]
 
-  jfrog_hostname = get_env("JFROG_HOSTNAME")
-  repo_name      = get_env("JFROG_STATE_BACKEND_REPOSITORY")
+ ## jfrog_hostname = get_env("JFROG_HOSTNAME")
+ ## repo_name      = get_env("JFROG_STATE_BACKEND_REPOSITORY")
 }
 
-# Backend config via generate
-generate "backend" {
-  path      = "backend.tf"
-  if_exists = "overwrite_terragrunt"
-  contents  = <<EOF
-terraform {
-  backend "remote" {
-    hostname     = "${local.jfrog_hostname}"
-    organization = "${local.repo_name}"
-
-    workspaces {
-      name = "thor-${local.environment}"
-    }
+# Backend config 
+remote_state {
+  backend = "s3"
+  generate = {
+    path      = "backend.tf"
+    if_exists = "overwrite_terragrunt"
   }
-}
-EOF
+  config = {
+    bucket       = "thor-terraform-state-${local.account.account_id}"
+    key          = "thor-${local.environment}/terraform.tfstate"
+    region       = local.account.state_region
+    use_lockfile = true
+    encrypt      = true
+  }
 }
 
 generate "provider" {

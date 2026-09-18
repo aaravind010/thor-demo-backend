@@ -8,7 +8,7 @@ terraform {
 
 locals {
   # Replace once the real domain is confirmed (e.g. "sphereboard.ai").
-  root_domain = "sphereboarddev.ai"
+  root_domain = "hartech.online"
 }
 
 # Every value the root module accepts is spelled out below instead of relying on a default in infra/src/variables.tf; only `environment` is left out, since infra/root.hcl already supplies it for every environment.
