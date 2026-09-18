@@ -3,19 +3,24 @@ locals {
 
   account_map = {
     dev = {
-      account_id = get_aws_account_id() # Account A, shared with qa — provide aws-account-id
-      aws_region = get_env("DEV_AWS_REGION")
+      account_name = "dev" # Account A, shared with qa
+      account_id   = "853973692277"
+      aws_region   = "us-west-2"
+      state_region = "us-east-1"
     }
     qa = {
-      account_id = get_aws_account_id() # Account A, shared with dev — provide aws-account-id
-      aws_region = get_env("QA_AWS_REGION")
+      account_name = "qa" # Account A, shared with dev
+      account_id   = "853973692277"
+      aws_region   = "us-west-2"
+      state_region = "us-east-1"
     }
     prod = {
-      account_id = get_aws_account_id() # Account B, isolated from dev/qa — provide aws-account-id
-      aws_region = get_env("PROD_AWS_REGION")
+      account_name = "prod" # Account B, isolated from dev/qa
+      account_id   = ""
+      aws_region   = "us-east-1"
+      state_region = "us-east-1"
     }
   }
-
   account = local.account_map[local.environment]
 }
 
@@ -31,7 +36,7 @@ remote_state {
   config = {
     bucket       = "thor-terraform-state-${local.account.account_id}"
     key          = "thor-${local.environment}/terraform.tfstate"
-    region       = local.account.aws_region
+    region       = local.account.state_region
     use_lockfile = true
     encrypt      = true
   }

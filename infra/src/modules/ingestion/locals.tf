@@ -7,6 +7,10 @@ locals {
   # see ecs_task.tf/state_machine.tf.
   ingestion_steps = ["extract-stage", "promote", "graph-load-start", "graph-load-poll"]
 
+  # The steps that write back to the ingestion bucket. They run under their own task role
+  # (ecs_task.tf's ingestion_graph_load_task_role) so s3:PutObject isn't granted to every step.
+  graph_load_steps = ["graph-load-start", "graph-load-poll"]
+
   # Falls back to this module's own ECR repo at "latest" when unset.
   resolved_ingestion_image = var.ingestion_container_image != "" ? var.ingestion_container_image : "${aws_ecr_repository.ecr_ingestion.repository_url}:latest"
 

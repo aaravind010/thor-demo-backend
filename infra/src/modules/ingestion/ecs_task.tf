@@ -171,6 +171,44 @@ resource "aws_iam_role_policy" "ingestion_task_permissions" {
   policy = data.aws_iam_policy_document.ingestion_task_permissions_document[0].json
 }
 
+# Second task role for local.graph_load_steps only. IAM can't tell task definitions apart on a
+# shared role (no condition key carries the task family), so the write grant needs its own role —
+# extract-stage/promote stay on ingestion_task_role and never get s3:PutObject.
+resource "aws_iam_role" "ingestion_graph_load_task_role" {
+  count = local.ingestion_active ? 1 : 0
+
+  name                 = "${local.name_prefix}-graph-load-task"
+  assume_role_policy   = data.aws_iam_policy_document.ecs_task_assume.json
+  permissions_boundary = var.iam_permissions_boundary_arn
+  tags                 = var.tags
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
+}
+
+# Everything ingestion_task_role has (inherited via source_policy_documents, so additions to the base
+# document reach both roles) plus the bucket write the graph-load steps need.
+data "aws_iam_policy_document" "ingestion_graph_load_task_permissions_document" {
+  count = local.ingestion_active ? 1 : 0
+
+  source_policy_documents = [data.aws_iam_policy_document.ingestion_task_permissions_document[0].json]
+
+  statement {
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.s3_ingestion[0].arn}/*"]
+  }
+}
+
+resource "aws_iam_role_policy" "ingestion_graph_load_task_permissions" {
+  count = local.ingestion_active ? 1 : 0
+
+  name   = "${local.name_prefix}-graph-load-task-permissions"
+  role   = aws_iam_role.ingestion_graph_load_task_role[0].id
+  policy = data.aws_iam_policy_document.ingestion_graph_load_task_permissions_document[0].json
+}
+
 # One task definition per THOR_STEP, all from the same image (Thor.Workflows.Ingestion is one
 # Docker image, four entry points) — baking THOR_STEP into the task def (not just a per-invocation
 # override) lets any stage be run standalone via ecs:RunTask without Step Functions. THOR_INPUT is
@@ -184,7 +222,7 @@ resource "aws_ecs_task_definition" "ecs_ingestion_task_definition" {
   cpu                      = var.ingestion_task_cpu
   memory                   = var.ingestion_task_memory
   execution_role_arn       = aws_iam_role.ingestion_execution_role[0].arn
-  task_role_arn            = aws_iam_role.ingestion_task_role[0].arn
+  task_role_arn            = contains(local.graph_load_steps, each.key) ? aws_iam_role.ingestion_graph_load_task_role[0].arn : aws_iam_role.ingestion_task_role[0].arn
 
   container_definitions = jsonencode([
     {
@@ -226,6 +264,7 @@ resource "aws_ecs_task_definition" "ecs_ingestion_task_definition" {
     aws_iam_role_policy_attachment.ingestion_execution_policy_attachment,
     aws_iam_role_policy.ingestion_execution_secrets,
     aws_iam_role_policy.ingestion_task_permissions,
+    aws_iam_role_policy.ingestion_graph_load_task_permissions,
   ]
 
   # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.

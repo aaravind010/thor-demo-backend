@@ -52,12 +52,14 @@ data "aws_iam_policy_document" "state_machine_permissions" {
     resources = ["*"]
   }
 
-  # Step Functions passes both ingestion task roles to ECS when starting the task.
+  # Step Functions passes the execution role plus whichever task role the step's task definition
+  # names (ingestion_task_role, or ingestion_graph_load_task_role for local.graph_load_steps).
   statement {
     actions = ["iam:PassRole"]
     resources = [
       aws_iam_role.ingestion_execution_role[0].arn,
       aws_iam_role.ingestion_task_role[0].arn,
+      aws_iam_role.ingestion_graph_load_task_role[0].arn,
     ]
   }
 
