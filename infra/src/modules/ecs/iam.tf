@@ -9,7 +9,7 @@ data "aws_iam_policy_document" "ecs_assume" {
   }
 }
 
-# One execution role per service, scoped to only the secrets that service uses.
+# One execution role per service (never shared), scoped to only the secret ARNs that service actually uses.
 resource "aws_iam_role" "execution" {
   for_each = local.active_services
 
@@ -17,11 +17,6 @@ resource "aws_iam_role" "execution" {
   assume_role_policy   = data.aws_iam_policy_document.ecs_assume.json
   permissions_boundary = var.iam_permissions_boundary_arn
   tags                 = var.tags
-
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
-  lifecycle {
-    ignore_changes = [tags, tags_all]
-  }
 }
 
 resource "aws_iam_role_policy_attachment" "execution_managed" {
@@ -36,7 +31,7 @@ data "aws_iam_policy_document" "secrets_access" {
 
   statement {
     actions   = ["secretsmanager:GetSecretValue"]
-    resources = [var.aurora_secret_arn]
+    resources = values(each.value.secrets)
   }
 }
 
@@ -48,7 +43,7 @@ resource "aws_iam_role_policy" "execution_secrets" {
   policy = each.value.json
 }
 
-# Task role — the app's own runtime permissions. X-Ray is the only baseline grant.
+# Task role — the application's own runtime permissions; X-Ray is the only baseline grant, add more per service as needed (e.g. Bedrock, DB access).
 resource "aws_iam_role" "task" {
   for_each = local.active_services
 
@@ -56,11 +51,6 @@ resource "aws_iam_role" "task" {
   assume_role_policy   = data.aws_iam_policy_document.ecs_assume.json
   permissions_boundary = var.iam_permissions_boundary_arn
   tags                 = var.tags
-
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
-  lifecycle {
-    ignore_changes = [tags, tags_all]
-  }
 }
 
 resource "aws_iam_role_policy_attachment" "task_xray" {
@@ -68,27 +58,4 @@ resource "aws_iam_role_policy_attachment" "task_xray" {
 
   role       = aws_iam_role.task[each.key].name
   policy_arn = "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
-}
-
-# thor-api/task-api's own Aurora access via RDS Data API — add more statements here as the task role needs more permissions.
-data "aws_iam_policy_document" "task_permissions" {
-  for_each = { for k, v in local.active_services : k => v if contains(["thor-api", "task-api"], k) }
-
-  statement {
-    actions   = ["rds-data:ExecuteStatement"]
-    resources = [var.aurora_cluster_arn]
-  }
-
-  statement {
-    actions   = ["secretsmanager:GetSecretValue"]
-    resources = [var.aurora_secret_arn]
-  }
-}
-
-resource "aws_iam_role_policy" "task_permissions" {
-  for_each = data.aws_iam_policy_document.task_permissions
-
-  name   = "task-permissions"
-  role   = aws_iam_role.task[each.key].id
-  policy = each.value.json
 }

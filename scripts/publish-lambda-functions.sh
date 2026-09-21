@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Publishes every backend/functions/<Name>/src/*.csproj into its own publish/ dir, since Terraform can only zip
-# existing files, not compile C#. Run by infra/root.hcl's before_hook on every terragrunt plan/apply/destroy.
-# Skips a function's build if the hash of its src/ + global.json is unchanged since the last build (local, via
-# .publish-hash) — a fresh CI checkout never has that, so in CI a miss falls through to a per-function JFrog cache
-# (JFROG_LAMBDA_ARTIFACTS_REPOSITORY, keyed by <function>/<hash>.tar.gz) before rebuilding with dotnet.
-# Excludes src/bin, src/obj from the hash (dotnet rewrites them on every publish). Hash marker lives next to
-# publish/, not inside it, so it doesn't get zipped into the deployed Lambda package.
+# Publishes each backend/functions/<Name>'s Lambda entry point into its own publish/ dir — Terraform can only zip
+# files, not compile C#. Run by root.hcl's before_hook on every terragrunt plan/apply/destroy. The entry point is
+# whichever *.csproj under <Name>/src/ (any depth) has <AWSProjectType>Lambda</AWSProjectType>; a plain library
+# like Core has no such marker and is skipped — its ProjectReference gets pulled in automatically anyway.
+# Skips a rebuild if src/ + global.json are unchanged (local .publish-hash), else falls through to a per-function
+# JFrog cache (JFROG_LAMBDA_ARTIFACTS_REPOSITORY, keyed by content hash) before a real dotnet publish. Hash
+# excludes bin/obj and lives outside publish/ so it isn't zipped into the deployed package.
 
 set -euo pipefail
 
@@ -92,14 +92,17 @@ echo "Scanning ${FUNCTIONS_DIR} for lambda functions..."
 
 function_count=0
 
-for csproj in "$FUNCTIONS_DIR"/*/src/*.csproj; do
-  [ -e "$csproj" ] || continue
+while IFS= read -r -d '' csproj; do
+  grep -q '<AWSProjectType>Lambda</AWSProjectType>' "$csproj" || continue
 
   function_count=$((function_count + 1))
 
-  src_dir="$(dirname "$csproj")"
-  function_dir="$(dirname "$src_dir")"
-  function_name="$(basename "$function_dir")"
+  # First path segment after $FUNCTIONS_DIR is the function's own folder, regardless of how deep the matching
+  # csproj sits under its src/ (flat, like src/*.csproj, or layered, like src/*.Function/*.csproj).
+  rel_path="${csproj#"$FUNCTIONS_DIR"/}"
+  function_name="${rel_path%%/*}"
+  function_dir="${FUNCTIONS_DIR}/${function_name}"
+  src_dir="${function_dir}/src"
   publish_dir="${function_dir}/publish"
   hash_file="${function_dir}/.publish-hash"
 
@@ -123,7 +126,7 @@ for csproj in "$FUNCTIONS_DIR"/*/src/*.csproj; do
   fi
 
   echo "  publishing ${function_name} -> ${publish_dir}"
-  dotnet publish "$csproj" -c Release -o "$publish_dir"
+  dotnet publish "$csproj" -c Release -r linux-x64 --self-contained false -o "$publish_dir"
   echo "$current_hash" > "$hash_file"
 
   if [ "$JFROG_CACHE_ENABLED" = "true" ]; then
@@ -131,10 +134,10 @@ for csproj in "$FUNCTIONS_DIR"/*/src/*.csproj; do
   fi
 
   echo "  published ${function_name}."
-done
+done < <(find "$FUNCTIONS_DIR" -type f -iname '*.csproj' -path '*/src/*' -print0)
 
 if [ "$function_count" -eq 0 ]; then
-  echo "No backend/functions/*/src/*.csproj found — nothing to publish."
+  echo "No Lambda project (<AWSProjectType>Lambda</AWSProjectType>) found under backend/functions/*/src/ — nothing to publish."
 else
   echo "Done — checked ${function_count} function(s)."
 fi

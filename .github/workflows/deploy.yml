@@ -29,9 +29,11 @@ on:
         type: string
 
 # Permissions don't propagate through a workflow_call boundary — re-declared here for _deploy-core.yml's use.
+# pull-requests: read — dorny/paths-filter falls back to the GitHub API to list changed files on pull_request events.
 permissions:
   id-token: write
   contents: write
+  pull-requests: read
 
 jobs:
   detect-changes:
@@ -57,19 +59,24 @@ jobs:
         with:
           base: ${{ github.event_name == 'push' && github.ref_name || '' }}
           filters: |
+            # proto/ generates each side of the Thor.Api <-> intelligence-engine gRPC contract
+            # at build time (Grpc.Tools here, scripts/generate_grpc.py there), so a contract-only
+            # change has to rebuild both or the two sides silently drift apart.
             thor-api-source:
-              - 'backend/services/thor-api/**'
+              - 'backend/services/Thor.API/**'
               - 'backend/shared/**'
+              - 'proto/**'
             thor-api-manifest:
               - 'deploy/thor-api/*.json'
             task-api-source:
-              - 'backend/services/task-api/**'
+              - 'backend/services/Thor.TaskAPI/**'
               - 'backend/shared/**'
             task-api-manifest:
               - 'deploy/task-api/*.json'
+            # No backend/shared/** — that's .NET-only code this Python service never builds against.
             intelligence-engine-source:
-              - 'backend/services/intelligence-engine/**'
-              - 'backend/shared/**'
+              - 'backend/services/Thor.IntelligenceEngine/**'
+              - 'proto/**'
             intelligence-engine-manifest:
               - 'deploy/intelligence-engine/*.json'
 

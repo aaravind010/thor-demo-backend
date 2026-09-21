@@ -40,22 +40,37 @@ resource "aws_iam_role" "thor-lambda-authorizer-role" {
   assume_role_policy   = data.aws_iam_policy_document.thor-lambda-authorizer-assume-policy-document.json
   permissions_boundary = var.iam_permissions_boundary_arn
   tags                 = var.tags
+}
 
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
-  lifecycle {
-    ignore_changes = [tags, tags_all]
+resource "aws_cloudwatch_log_group" "thor-lambda-authorizer-logs" {
+  name              = "/aws/lambda/${local.name_prefix}"
+  retention_in_days = 30
+  tags              = var.tags
+}
+
+resource "aws_security_group" "thor-lambda-authorizer-sg" {
+  name        = "${local.name_prefix}-sg"
+  description = "Egress-only security group for the authorizer Lambda ENIs"
+  vpc_id      = var.vpc_id
+
+  egress {
+    description     = "HTTPS to VPC endpoints"
+    from_port       = 443
+    to_port         = 443
+    protocol        = "tcp"
+    security_groups = [var.vpc_endpoints_security_group_id]
   }
+
+  tags = var.tags
 }
 
-resource "aws_iam_role_policy_attachment" "thor-lambda-authorizer-policy-attachment" {
-  role       = aws_iam_role.thor-lambda-authorizer-role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-}
-
-# One policy for everything beyond basic execution — add new statements here as the function needs more permissions,
-# rather than a new aws_iam_role_policy per permission. ExecuteStatement/GetSecretValue for Aurora Data API,
-# GetSecretValue for the PBKDF2 salt (SecretsManagerSaltProvider fetches it by ARN at cold start).
+# Replaces AWSLambdaBasicExecutionRole, scoped to this function's own log group; also grants Aurora Data API access and Secrets Manager reads for Aurora's secret.
 data "aws_iam_policy_document" "thor-lambda-authorizer-permissions" {
+  statement {
+    actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+    resources = ["${aws_cloudwatch_log_group.thor-lambda-authorizer-logs.arn}:*"]
+  }
+
   statement {
     actions   = ["rds-data:ExecuteStatement"]
     resources = [var.aurora_cluster_arn]
@@ -65,23 +80,17 @@ data "aws_iam_policy_document" "thor-lambda-authorizer-permissions" {
     actions   = ["secretsmanager:GetSecretValue"]
     resources = [var.aurora_secret_arn, var.authorizer_salt_secret_arn]
   }
+
+  statement {
+    actions   = ["ec2:CreateNetworkInterface", "ec2:DescribeNetworkInterfaces", "ec2:DeleteNetworkInterface", "ec2:AssignPrivateIpAddresses", "ec2:UnassignPrivateIpAddresses"]
+    resources = ["*"]
+  }
 }
 
 resource "aws_iam_role_policy" "thor_lambda_authorizer_permissions" {
   name   = "thor-lambda-authorizer-permissions"
   role   = aws_iam_role.thor-lambda-authorizer-role.id
   policy = data.aws_iam_policy_document.thor-lambda-authorizer-permissions.json
-}
-
-resource "aws_cloudwatch_log_group" "thor-lambda-authorizer-logs" {
-  name              = "/aws/lambda/${local.name_prefix}"
-  retention_in_days = 30
-  tags              = var.tags
-
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
-  lifecycle {
-    ignore_changes = [tags, tags_all]
-  }
 }
 
 resource "aws_lambda_function" "thor-authorizer-lambda" {
@@ -96,6 +105,11 @@ resource "aws_lambda_function" "thor-authorizer-lambda" {
   filename         = data.archive_file.thor-authorizer-archive-file.output_path
   source_code_hash = data.archive_file.thor-authorizer-archive-file.output_base64sha256
 
+  vpc_config {
+    subnet_ids         = var.private_subnet_ids
+    security_group_ids = [aws_security_group.thor-lambda-authorizer-sg.id]
+  }
+
   environment {
     variables = {
       AURORA_CLUSTER_ARN             = var.aurora_cluster_arn
@@ -105,12 +119,7 @@ resource "aws_lambda_function" "thor-authorizer-lambda" {
     }
   }
 
-  depends_on = [aws_cloudwatch_log_group.thor-lambda-authorizer-logs, aws_iam_role_policy_attachment.thor-lambda-authorizer-policy-attachment, aws_iam_role_policy.thor_lambda_authorizer_permissions]
-
-  # Custodian auto-tags this after creation and an SCP blocks removing it (see ecs/main.tf) — ignore tags to avoid fighting it.
-  lifecycle {
-    ignore_changes = [tags, tags_all]
-  }
+  depends_on = [aws_cloudwatch_log_group.thor-lambda-authorizer-logs, aws_iam_role_policy.thor_lambda_authorizer_permissions]
 
   tags = var.tags
 }

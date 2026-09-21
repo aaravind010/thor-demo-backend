@@ -18,10 +18,9 @@ variable "private_subnet_ids" {
   description = "Private subnets for the DB subnet group (needs at least 2, in different AZs)"
 }
 
-variable "allowed_security_group_ids" {
-  type        = map(string)
-  default     = {}
-  description = "Security group IDs allowed to reach Aurora on 5432, one ingress rule per entry — keyed by a static consumer name (e.g. \"thor-api\", \"task-api\"), not the ID itself. for_each needs its keys known at plan time even when the ID values aren't (e.g. a security group Terraform is still creating in this same apply) — a map with static keys and possibly-unknown values satisfies that; a set built from the ID values themselves does not, since the IDs would be both the keys and the values."
+variable "rds_proxy_security_group_id" {
+  type        = string
+  description = "RDS Proxy's security group ID — RDS Proxy is mandatory, so this is always provided."
 }
 
 variable "database_name" {

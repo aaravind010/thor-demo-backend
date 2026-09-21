@@ -1,0 +1,22 @@
+{
+  "connectorType": 402,
+  "entityKind": "Account",
+  "columnMappings": {
+    "display_name": "Name",
+    "sam_account_name": "SamAccountName",
+    "email": "Email",
+    "native_account_id": "Sid",
+    "domain_name": "DomainFQDN"
+  },
+  "hashFields": [
+    "connector_type",
+    "native_id",
+    "account_kind",
+    "display_name",
+    "sam_account_name",
+    "email",
+    "domain_name",
+    "is_deleted",
+    "is_disabled"
+  ]
+}

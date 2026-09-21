@@ -1,4 +1,4 @@
-# Unconditional — a repo must exist before enable_compute can turn on.
+# One repo per service, per environment; unconditional, unlike everything else here, since a repo must exist before enable_compute can be turned on.
 resource "aws_ecr_repository" "thor-ecr-repo" {
   for_each = var.services
 
@@ -14,11 +14,6 @@ resource "aws_ecr_repository" "thor-ecr-repo" {
   }
 
   tags = var.tags
-
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
-  lifecycle {
-    ignore_changes = [tags, tags_all]
-  }
 }
 
 resource "aws_ecr_lifecycle_policy" "thor-ecr-lifecycle" {
@@ -73,4 +68,4 @@ resource "aws_ecr_repository_policy" "cross_account_pull" {
       ]
     }]
   })
-}
+} 

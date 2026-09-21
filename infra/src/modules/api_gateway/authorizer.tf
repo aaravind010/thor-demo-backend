@@ -1,11 +1,11 @@
-# REQUEST-type authorizer for the x-api-key header. payload_format_version 1.0 keeps it compatible with Thor.Authorizer's IAM-policy response.
+# REQUEST authorizer (Thor.Authorizer validates ApiKey or Cognito JWT); Host is also an identity source since it resolves the tenant, and Authorization means something different per tenant.
 resource "aws_apigatewayv2_authorizer" "thor-api-key" {
   api_id                            = aws_apigatewayv2_api.thor-apigw-api.id
   name                              = "${var.service_name}-${var.environment}-authorizer"
   authorizer_type                   = "REQUEST"
   authorizer_uri                    = var.authorizer_lambda_invoke_arn
   authorizer_payload_format_version = "1.0"
-  identity_sources                  = ["$request.header.x-api-key"]
+  identity_sources                  = ["$request.header.Authorization", "$request.header.Host"]
   authorizer_result_ttl_in_seconds  = 300
 }
 

@@ -1,0 +1,19 @@
+{
+  "connectorType": 402,
+  "entityKind": "Group",
+  "columnMappings": {
+    "display_name": "Name",
+    "email": "Email",
+    "domain_name": "DomainFQDN"
+  },
+  "hashFields": [
+    "connector_type",
+    "native_id",
+    "group_class",
+    "display_name",
+    "email",
+    "domain_name",
+    "is_deleted",
+    "edge_refs"
+  ]
+}

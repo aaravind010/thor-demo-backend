@@ -1,0 +1,23 @@
+{
+  "connectorType": 308,
+  "entityKind": "Account",
+  "columnMappings": {
+    "display_name": "displayName",
+    "sam_account_name": "sAMAccountName",
+    "upn": "userPrincipalName",
+    "email": "mail",
+    "native_account_id": "objectSid"
+  },
+  "hashFields": [
+    "connector_type",
+    "native_id",
+    "account_kind",
+    "display_name",
+    "upn",
+    "email",
+    "domain_name",
+    "is_deleted",
+    "is_disabled",
+    "edge_refs"
+  ]
+}

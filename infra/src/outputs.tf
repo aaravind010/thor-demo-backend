@@ -28,9 +28,7 @@ output "ecr_repository_urls" {
   value       = module.ecs.ecr_repository_urls
 }
 
-# Guarded because these index the "thor-api" map key, which only exists once enable_compute is true. Output
-# names kept as thor_* (stable external interface referring to "the main/public service") even though the
-# underlying service key is thor-api.
+# Guarded because these index the "thor-api" map key, which only exists once enable_compute is true.
 output "thor_target_group_arn" {
   value = var.enable_compute ? module.ecs.target_group_arns["thor-api"] : null
 }
@@ -44,7 +42,7 @@ output "thor_nlb_dns_name" {
 }
 
 output "api_gateway_invoke_url" {
-  description = "Default execute-api invoke URL — no custom domain yet. Always locked behind the Lambda API-key authorizer."
+  description = "Default execute-api invoke URL — no custom domain yet. Always locked behind the Lambda API-key authorizer"
   value       = var.enable_compute ? module.api_gateway[0].invoke_url : null
 }
 
@@ -72,7 +70,7 @@ output "route53_zone_ids" {
 }
 
 output "route53_name_servers" {
-  description = "Map of zone name -> its 4 name servers, for zones this created. Hand the relevant entry to whoever owns that zone's parent domain to add as an NS delegation record."
+  description = "Map of zone name -> its 4 name servers, for zones this created. Hand the relevant entry to whoever owns that zone's parent domain (e.g. SPHERE IT for dev.sphereboard.ai) to add as an NS delegation record."
   value       = var.enable_route53 ? module.route53[0].name_servers : null
 }
 
@@ -93,38 +91,4 @@ output "frontend_distribution_id" {
 
 output "frontend_distribution_domain_name" {
   value = var.enable_frontend ? module.frontend[0].distribution_domain_name : null
-}
-
-output "ingestion_ecr_repository_url" {
-  description = "Populated regardless of enable_ingestion — a repo must exist before the flag can turn on"
-  value       = module.ingestion.ecr_repository_url
-}
-
-output "ingestion_queue_url" {
-  value = var.enable_ingestion ? module.ingestion.queue_url : null
-}
-
-output "ingestion_state_machine_arn" {
-  value = var.enable_ingestion ? module.ingestion.state_machine_arn : null
-}
-
-output "neptune_endpoint" {
-  value = var.enable_neptune ? module.neptune[0].endpoint : null
-}
-
-output "neptune_reader_endpoint" {
-  value = var.enable_neptune ? module.neptune[0].reader_endpoint : null
-}
-
-output "neptune_port" {
-  value = var.enable_neptune ? module.neptune[0].port : null
-}
-
-output "neptune_cluster_resource_id" {
-  description = "Needed for the neptune-db IAM policy ARN once the Gremlin client is wired up"
-  value       = var.enable_neptune ? module.neptune[0].cluster_resource_id : null
-}
-
-output "neptune_security_group_id" {
-  value = var.enable_neptune ? module.neptune[0].security_group_id : null
 }

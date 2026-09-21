@@ -1,5 +1,5 @@
 output "endpoint" {
-  description = "What thor-api/task-api should connect to instead of Aurora's own endpoint, to actually get the pooling benefit"
+  description = "What thor/task-api should connect to instead of Aurora's own endpoint, to actually get the pooling benefit"
   value       = aws_db_proxy.rds_proxy.endpoint
 }
 

@@ -3,14 +3,20 @@ variable "environment" {
   description = "Environment name (dev, qa, prod)"
 }
 
-variable "account_id" {
-  type        = string
-  description = "AWS account ID this environment deploys into — root.hcl's account_map, supplied via its inputs block. Used to build the thor-<environment>-role-boundary policy's ARN (main.tf) without hardcoding it."
-}
-
 variable "aws_region" {
   type        = string
-  description = "AWS region this environment deploys into — root.hcl's account_map, supplied via its inputs block. Same value the generated provider block is already configured with; passed through explicitly so modules can reference it (e.g. for awslogs-region in a container's logConfiguration) without a live aws_region data source lookup."
+  description = "AWS region this environment's regional resources deploy into — root.hcl's account_map, supplied via its inputs block. Same value the generated provider block is already configured with; passed through explicitly so a certificate with scope = \"regional\" (var.hosted_zones) can be issued in it."
+}
+
+variable "global_region" {
+  type        = string
+  description = "The region AWS requires for CloudFront-adjacent resources, regardless of where var.aws_region puts the rest of the stack. Two things depend on it: ACM certificates a CloudFront distribution serves (CloudFront reads certs only from us-east-1) and CLOUDFRONT-scoped WAFv2 web ACLs (only creatable through the us-east-1 endpoint — every other region rejects the scope with WAFInvalidParameterException). Not a tunable: set to anything but us-east-1 and both break."
+  default     = "us-east-1"
+}
+
+variable "account_id" {
+  type        = string
+  description = "AWS account ID"
 }
 
 # --- network ---
@@ -18,6 +24,7 @@ variable "aws_region" {
 variable "vpc_cidr" {
   type        = string
   description = "CIDR block for the VPC"
+  default     = ""
 }
 
 variable "az_count" {
@@ -29,6 +36,7 @@ variable "az_count" {
 variable "private_subnet_cidrs" {
   type        = list(string)
   description = "CIDR blocks for private subnets, one per AZ"
+  default     = []
 }
 
 variable "enable_vpc_endpoints" {
@@ -37,7 +45,7 @@ variable "enable_vpc_endpoints" {
   default     = true
 }
 
-# --- compute (shared ECS cluster running thor-api, task-api, intelligence-engine) ---
+# --- compute (shared ECS cluster running thor, task-api, intelligence-engine) ---
 
 variable "enable_compute" {
   type        = bool
@@ -45,32 +53,31 @@ variable "enable_compute" {
   default     = true
 }
 
-variable "enable_ingestion" {
-  type        = bool
-  description = "Whether to create the ingestion pipeline (S3 -> SQS -> EventBridge Pipe -> CreateManifest Lambda -> Step Functions -> ECS ingestion task, see modules/ingestion). The ECR repo is created regardless of this flag, so an image can be pushed before turning it on — everything else stays off until deliberately enabled."
-  default     = false
-}
-
 variable "services" {
   description = "Per-service configuration for the shared ECS cluster, keyed by service name. Must define thor-api, task-api, and intelligence-engine, with thor-api the only one setting expose_via_nlb = true (a private NLB reached via VPC Link from API Gateway, not the internet directly — no ALB). deployment_strategy=BLUE_GREEN is a per-deploy toggle (reserved for DB-schema-change deploys per deployment_strategy_plan.md), not a fixed per-service default."
   type = map(object({
-    container_image        = string
-    container_port         = number
-    cpu                    = number
-    memory                 = number
-    desired_count          = number
-    min_healthy_percent    = number
-    max_percent            = number
-    health_check_path      = string
-    log_retention_days     = number
-    environment_variables  = map(string)
-    secrets                = map(string)
-    expose_via_nlb         = bool
-    nlb_listener_port      = optional(number)
-    nlb_test_listener_port = optional(number, 8082)
-    deployment_strategy    = string
-    bake_time_in_minutes   = number
+    container_image       = optional(string, "")
+    container_port        = optional(number, 8080)
+    cpu                   = optional(number, 512)
+    memory                = optional(number, 1024)
+    desired_count         = optional(number, 2)
+    min_healthy_percent   = optional(number, 100)
+    max_percent           = optional(number, 200)
+    health_check_path     = optional(string, "/health")
+    log_retention_days    = optional(number, 30)
+    environment_variables = optional(map(string), {})
+    secrets               = optional(map(string), {})
+    expose_via_nlb        = optional(bool, false)
+    nlb_listener_port     = optional(number, 80)
+    deployment_strategy   = optional(string, "ROLLING")
+    bake_time_in_minutes  = optional(number, 5)
   }))
+
+  default = {
+    thor-api            = { container_image = "", expose_via_nlb = true }
+    task-api            = { container_image = "" }
+    intelligence-engine = { container_image = "" }
+  }
 
   validation {
     condition     = alltrue([for k in ["thor-api", "task-api", "intelligence-engine"] : contains(keys(var.services), k)])
@@ -100,33 +107,6 @@ variable "tags" {
   default     = {}
 }
 
-# --- route53 + acm (dynamic hosted zones and certificates) ---
-# Off by default until domain names are confirmed and any delegation they
-# need (e.g. SPHERE IT adding an NS record for a subdomain) is actually in
-# place.
-
-variable "enable_route53" {
-  type        = bool
-  description = "Whether to create this env's hosted zones + ACM certificates. Leave false until domain names are confirmed and delegated."
-  default     = false
-}
-
-variable "hosted_zones" {
-  description = "Hosted zones and their ACM certificates, nested together for readability. Keyed by an arbitrary logical name (not the domain itself — that's zone_name). Each zone's certificates map is in turn keyed by its own arbitrary logical name, scoped to that zone, so short names like \"api\" can repeat across different zones without colliding. parent_zone_name, if set to another zone's zone_name present in this same map, gets this zone's NS delegation record created automatically in that parent (modules/route53) instead of needing to be pasted in by hand. Flattened into modules/route53 + modules/acm's flat shapes inside main.tf — this nesting is purely a root-level ergonomic choice, not something either module needs to know about. Unused while enable_route53 is false."
-  type = map(object({
-    zone_name        = string
-    create_zone      = optional(bool, true)
-    comment          = optional(string, "")
-    tags             = optional(map(string), {})
-    parent_zone_name = optional(string, "")
-    certificates = map(object({
-      domain_name               = string
-      subject_alternative_names = optional(list(string), [])
-    }))
-  }))
-  default = {}
-}
-
 # --- frontend (static SPA: S3 + CloudFront) ---
 
 variable "enable_frontend" {
@@ -139,24 +119,6 @@ variable "frontend_price_class" {
   type        = string
   description = "CloudFront price class for the frontend distribution"
   default     = "PriceClass_100"
-}
-
-variable "frontend_certificate_key" {
-  type        = string
-  description = "Which entry in the flattened hosted_zones certificates (key format \"<zone_key>/<cert_key>\", e.g. \"thor/frontend\") the frontend distribution's custom domain + cert come from. \"\" (default) leaves the frontend on CloudFront's default certificate, no alias record created."
-  default     = ""
-}
-
-variable "api_gateway_certificate_key" {
-  type        = string
-  description = "Which entry in the flattened hosted_zones certificates (key format \"<zone_key>/<cert_key>\", e.g. \"thor/api_gateway\") the API's custom domain + cert come from. \"\" (default) leaves the API reachable only via its default execute-api URL, no custom domain mapping created."
-  default     = ""
-}
-
-variable "backend_certificate_key" {
-  type        = string
-  description = "Which entry in the flattened hosted_zones certificates (key format \"<zone_key>/<cert_key>\", e.g. \"thor/backend\") the NLB's TLS listener cert comes from, for NLB <-> ECS re-encryption. \"\" (default) leaves the NLB on plain TCP and the app on plain HTTP:8080, today's behavior — set only where the re-encryption path is actually wanted (dev only for now)."
-  default     = ""
 }
 
 # --- api gateway authorizer (Lambda, validates connector API keys against Aurora) ---
@@ -184,13 +146,97 @@ variable "authorizer_source_dir" {
   description = "Absolute path to lambda authorizer code"
 }
 
-variable "create_manifest_source_dir" {
+variable "secrets_recovery_window_in_days" {
+  type        = number
+  description = "Days the authorizer salt secret stays recoverable after a destroy. 0 = delete immediately."
+  default     = 30
+}
+
+# --- route53 + acm (hosted zones with their certificates nested) ---
+# hosted_zones nests certificates under their zone for readability here; modules/route53 and
+# modules/acm both stay flat and generic — infra/src/main.tf flattens this at the boundary.
+
+variable "enable_route53" {
+  type        = bool
+  description = "Whether to create module.route53/module.acm at all. false leaves every custom-domain input (frontend_certificate_key, api_cdn_certificate_key, backend_certificate_key) inert regardless of what they're set to."
+  default     = false
+}
+
+variable "hosted_zones" {
+  description = "Hosted zones this environment needs, keyed by an arbitrary logical name (e.g. \"apex\", \"thor\"), each with its own nested certificates. A zone with create_zone = false (the default is true) is looked up instead of created — for a parent zone another environment already owns. parent_zone_name, if it matches another zone's zone_name in this same map, gets this zone's NS delegation record created automatically in that parent."
+  type = map(object({
+    zone_name        = string
+    create_zone      = optional(bool, true)
+    comment          = optional(string, "")
+    tags             = optional(map(string), {})
+    parent_zone_name = optional(string, "")
+    certificates = optional(map(object({
+      domain_name               = string
+      subject_alternative_names = optional(list(string), [])
+      include_wildcard          = optional(bool, false)
+      # Which region ACM issues this certificate in, named by what consumes it rather than by a
+      # region literal — so nothing here has to be touched when var.aws_region moves.
+      #
+      #   "global"   -> var.global_region (us-east-1). For certificates a CloudFront distribution
+      #                 serves, which CloudFront will only read from us-east-1.
+      #   "regional" -> var.aws_region. For certificates a regional resource attaches, above all
+      #                 the NLB's TLS listener: an ACM certificate can only be attached by a load
+      #                 balancer in its own region, so a us-east-1 cert simply cannot be used by a
+      #                 differently-regioned NLB.
+      #
+      # Defaults to "global" because most certificates here front CloudFront; the NLB's is the
+      # exception and says so explicitly in each environment's terragrunt.hcl.
+      scope = optional(string, "global")
+    })), {})
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for zone in values(var.hosted_zones) : alltrue([
+        for cert in values(zone.certificates) : contains(["global", "regional"], cert.scope)
+      ])
+    ])
+    error_message = "Each certificate's scope must be either \"global\" (us-east-1, for CloudFront) or \"regional\" (this stack's own region, for the NLB)."
+  }
+}
+
+variable "frontend_certificate_key" {
   type        = string
-  description = "Absolute path to CreateManifest's dotnet publish output"
+  description = "Which entry of var.hosted_zones' flattened certificates (\"<zone_key>/<cert_key>\", e.g. \"thor/frontend\") covers the frontend's custom domain. \"\" (default) leaves the frontend on its own *.cloudfront.net domain. Unused when enable_route53 is false."
+  default     = ""
+}
+
+# --- api cdn (CloudFront in front of the API Gateway REST API) ---
+
+variable "api_cdn_certificate_key" {
+  type        = string
+  description = "Which entry of var.hosted_zones' flattened certificates (\"<zone_key>/<cert_key>\", e.g. \"thor/api\") covers the API's custom domain. \"\" (default) leaves the API CDN on its own *.cloudfront.net domain. Unused when enable_route53 is false."
+  default     = ""
+}
+
+variable "api_cdn_price_class" {
+  type        = string
+  description = "CloudFront price class for the API's CDN distribution"
+  default     = "PriceClass_100"
+}
+
+variable "api_cdn_waf_rate_limit" {
+  type        = number
+  description = "WAF rate-limit threshold for the API's CDN distribution: requests from a single IP in a rolling 5-minute window before it's blocked."
+  default     = 2000
+}
+
+variable "backend_certificate_key" {
+  type        = string
+  description = "Which entry in the flattened hosted_zones certificates (\"<zone_key>/<cert_key>\") the NLB's TLS listener cert comes from, for NLB <-> ECS re-encryption. \"\" (default) leaves module.api_gateway's tls_config unset — must agree with the NLB's own TLS state, which this branch doesn't yet configure (see modules/ecs)."
+  default     = ""
 }
 
 # --- database (Aurora PostgreSQL, module.aurora — task-api's database) ---
-# One cluster per environment, not a map like `services` — RDS Proxy and per-tenant credentials are out of scope for now.
+# One cluster per environment, not a map like `services` — RDS Proxy and
+# per-tenant credentials are deliberately out of scope for now, see this
+# repo's Aurora module memory for why.
 
 variable "aurora_database_name" {
   type        = string
@@ -240,48 +286,5 @@ variable "aurora_skip_final_snapshot" {
   description = "Should be false for prod, true for throwaway dev/qa environments"
 }
 
-# --- neptune graph db (module.neptune) ---
-
-variable "enable_neptune" {
-  type        = bool
-  description = "Whether to create the Neptune graph DB (module.neptune) — subnet group, security group + per-consumer ingress rules, and the serverless cluster/instance"
-  default     = false
-}
-
-variable "neptune_engine_version" {
-  type        = string
-  default     = "1.4.8.0"
-  description = "Neptune engine version — passed through to module.neptune"
-}
-
-variable "neptune_min_capacity" {
-  type        = number
-  default     = 1
-  description = "Neptune Serverless v2 minimum NCU"
-}
-
-variable "neptune_max_capacity" {
-  type        = number
-  default     = 2
-  description = "Neptune Serverless v2 maximum NCU"
-}
-
-variable "neptune_backup_retention_days" {
-  type        = number
-  default     = 7
-  description = "Neptune automated backup retention period"
-}
-
-variable "neptune_deletion_protection" {
-  type        = bool
-  default     = false
-  description = "Should be true for prod, false for throwaway dev/qa environments"
-}
-
-variable "neptune_skip_final_snapshot" {
-  type        = bool
-  default     = true
-  description = "Should be false for prod, true for throwaway dev/qa environments"
-}
-
-# Future modules' variables go here.
+# storage / event-driven variables get added here as those modules are
+# wired in below, alongside their own module blocks in main.tf.

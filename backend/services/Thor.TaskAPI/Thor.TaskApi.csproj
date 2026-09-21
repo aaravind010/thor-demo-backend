@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Thor.TaskApi</RootNamespace>
+    <AssemblyName>Thor.TaskApi</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\shared\Thor.Auth\Thor.Auth.csproj" />
+    <ProjectReference Include="..\..\shared\Thor.DataConnectionManager\Thor.DataConnectionManager.csproj" />
+    <ProjectReference Include="..\..\shared\Thor.DataLayer\Thor.DataLayer.csproj" />
+    <ProjectReference Include="..\..\shared\Thor.Core\Thor.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Asp.Versioning.Mvc" Version="10.2.1" />
+    <PackageReference Include="Asp.Versioning.Mvc.ApiExplorer" Version="10.2.1" />
+    <PackageReference Include="Asp.Versioning.OpenApi" Version="10.2.1" />
+    <PackageReference Include="AWSSDK.S3" Version="4.0.5" />
+    <PackageReference Include="DotNetEnv" Version="3.2.0" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.11" />
+    <PackageReference Include="Microsoft.Extensions.ApiDescription.Server" Version="10.0.11">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Scalar.AspNetCore" Version="2.16.18" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OpenApiDocsOutputDirectory>$(MSBuildProjectDirectory)\..\..\..\docs\apidocs</OpenApiDocsOutputDirectory>
+  </PropertyGroup>
+
+  <!-- AddOpenApi() registers a single document named "v1", so the build-time generator
+       (Microsoft.Extensions.ApiDescription.Server) always writes "$(AssemblyName).json";
+       rename it into the tracked docs/apidocs snapshot on every build. -->
+  <Target Name="CopyOpenApiDocumentToDocs" AfterTargets="GenerateOpenApiDocuments">
+    <Copy SourceFiles="$(OpenApiDocumentsDirectory)\$(AssemblyName).json" DestinationFiles="$(OpenApiDocsOutputDirectory)\taskapi_openapi_v1.json" />
+  </Target>
+
+</Project>

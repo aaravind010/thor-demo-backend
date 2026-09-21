@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="Thor.Api.csproj" />
+  <Folder Name="/test/">
+    <Project Path="test/Thor.Api.Test/Thor.Api.Test.csproj" />
+  </Folder>
+</Solution>

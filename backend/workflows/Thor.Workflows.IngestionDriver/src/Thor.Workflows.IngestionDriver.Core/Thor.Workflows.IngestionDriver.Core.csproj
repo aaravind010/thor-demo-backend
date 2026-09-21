@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\..\shared\Thor.DataLayer\Thor.DataLayer.csproj" />
+    <ProjectReference Include="..\..\..\..\shared\Thor.DataConnectionManager\Thor.DataConnectionManager.csproj" />
+    <ProjectReference Include="..\..\..\..\shared\Thor.S3\Thor.S3.csproj" />
+  </ItemGroup>
+
+</Project>

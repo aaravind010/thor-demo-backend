@@ -1,10 +1,11 @@
-name: Infra Destroy
+name: Thor-Infra-Destroy
 
 # Manual-only: terragrunt destroy for one environment, picked from a dropdown at dispatch time.
 # Mirrors infra.yml's plan-terragrunt/apply-terragrunt split: plan-destroy computes and uploads a
 # destroy plan (read-only, its logs are the review); destroy-terragrunt applies that exact saved
-# plan under the same dev/qa/prod GitHub Environment gate infra.yml's apply job uses (qa/prod need
-# a reviewer, dev runs immediately) — applying a saved plan needs no -auto-approve either way.
+# plan under the same dev/qa GitHub Environment gate infra.yml's apply job uses (qa needs a
+# reviewer, dev runs immediately) — applying a saved plan needs no -auto-approve either way.
+# prod is deliberately not an option here — no destroy path for prod.
 
 on:
   workflow_dispatch:
@@ -13,7 +14,12 @@ on:
         description: "Environment to destroy"
         required: true
         type: choice
-        options: [dev, qa, prod]
+        options: [dev, qa]
+      lock_id:
+        description: "Lock ID to force-unlock instead of destroying"
+        required: false
+        type: string
+        default: ""
 
 # One destroy per environment at a time; never cancels mid-run.
 concurrency:
@@ -26,19 +32,38 @@ permissions:
 
 env:
   DOTNET_VERSION: "10.0.100"
-  # Same as infra.yml — root.hcl reads get_env("<ENV>_AWS_REGION"), no fallback; only the one
-  # matching inputs.environment is ever actually read.
-  DEV_AWS_REGION: ${{ vars.DEV_AWS_REGION }}
-  QA_AWS_REGION: ${{ vars.QA_AWS_REGION }}
-  PROD_AWS_REGION: ${{ vars.PROD_AWS_REGION }}
-  TF_TOKEN_trialc6mgth_jfrog_io: ${{ secrets.JFROG_ACCESS_TOKEN }}
+  TF_TOKEN_sphereco_jfrog_io: ${{ secrets.jf_api_thor }}
   JFROG_HOSTNAME: ${{ vars.JFROG_HOSTNAME }}
   JFROG_STATE_BACKEND_REPOSITORY: ${{ vars.JFROG_STATE_BACKEND_REPOSITORY }}
-  JFROG_ACCESS_TOKEN: ${{ secrets.JFROG_ACCESS_TOKEN }}
+  JFROG_ACCESS_TOKEN: ${{ secrets.jf_api_thor }}
+  JFROG_USERNAME: ${{ vars.jf_usr_thor }}
   JFROG_LAMBDA_ARTIFACTS_REPOSITORY: ${{ vars.JFROG_LAMBDA_ARTIFACTS_REPOSITORY }}
+  # root.hcl reads get_env("<ENV>_AWS_REGION"), no fallback; only the one matching
+  # inputs.environment is ever actually read.
+  DEV_AWS_REGION: ${{ vars.DEV_AWS_REGION }}
+  QA_AWS_REGION: ${{ vars.QA_AWS_REGION }}
 
 jobs:
+  # Skipped entirely when lock_id is set — force-unlock below runs standalone instead.
+  validate-branch:
+    if: inputs.lock_id == ''
+    runs-on: ubuntu-latest
+    # workflow_dispatch allows any branch — enforce infra.yml's dev/qa <-> branch mapping.
+    steps:
+      - name: Enforce dev/qa branch mapping
+        run: |
+          case "${{ inputs.environment }}" in
+            dev) EXPECTED="dev" ;;
+            qa) EXPECTED="qa" ;;
+          esac
+
+          if [ "${{ github.ref_name }}" != "$EXPECTED" ]; then
+            echo "::error::environment '${{ inputs.environment }}' must be dispatched from branch '$EXPECTED', not '${{ github.ref_name }}'." >&2
+            exit 1
+          fi
+
   plan-destroy:
+    needs: validate-branch
     runs-on: ubuntu-latest
     # No environment: block here — read-only, nothing to gate. Its logs are what the approver
     # reviews before approving destroy-terragrunt below.
@@ -56,8 +81,8 @@ jobs:
 
       - uses: ./.github/actions/terragrunt-setup
         with:
-          role_arn: ${{ inputs.environment == 'dev' && vars.DEV_AWS_ROLE_ARN || inputs.environment == 'qa' && vars.QA_AWS_ROLE_ARN || inputs.environment == 'prod' && vars.PROD_AWS_ROLE_ARN }}
-          region: ${{ inputs.environment == 'dev' && vars.DEV_AWS_REGION || inputs.environment == 'qa' && vars.QA_AWS_REGION || inputs.environment == 'prod' && vars.PROD_AWS_REGION }}
+          role_arn: ${{ inputs.environment == 'dev' && vars.DEV_AWS_ROLE_ARN || inputs.environment == 'qa' && vars.QA_AWS_ROLE_ARN }}
+          region: ${{ inputs.environment == 'dev' && vars.DEV_AWS_REGION || inputs.environment == 'qa' && vars.QA_AWS_REGION }}
           working_directory: infra/envs/${{ inputs.environment }}
 
       - name: terragrunt plan -destroy
@@ -92,13 +117,13 @@ jobs:
   destroy-terragrunt:
     needs: plan-destroy
     runs-on: ubuntu-latest
-    # Shared dev/qa/prod Environments with backend deploy and infra.yml — only qa/prod require review.
+    # Shared dev/qa Environments with infra.yml — only qa requires review.
     environment: ${{ inputs.environment }}
     defaults:
       run:
         working-directory: infra/envs/${{ inputs.environment }}
     env:
-      # Applying the exact plan plan-destroy already computed — no rebuild needed, see that job's
+      # Applying the exact plan: plan-destroy already computed — no rebuild needed, see that job's
       # tar step comment.
       SKIP_LAMBDA_PUBLISH: "true"
     steps:
@@ -106,8 +131,8 @@ jobs:
 
       - uses: ./.github/actions/terragrunt-setup
         with:
-          role_arn: ${{ inputs.environment == 'dev' && vars.DEV_AWS_ROLE_ARN || inputs.environment == 'qa' && vars.QA_AWS_ROLE_ARN || inputs.environment == 'prod' && vars.PROD_AWS_ROLE_ARN }}
-          region: ${{ inputs.environment == 'dev' && vars.DEV_AWS_REGION || inputs.environment == 'qa' && vars.QA_AWS_REGION || inputs.environment == 'prod' && vars.PROD_AWS_REGION }}
+          role_arn: ${{ inputs.environment == 'dev' && vars.DEV_AWS_ROLE_ARN || inputs.environment == 'qa' && vars.QA_AWS_ROLE_ARN }}
+          region: ${{ inputs.environment == 'dev' && vars.DEV_AWS_REGION || inputs.environment == 'qa' && vars.QA_AWS_REGION }}
           working_directory: infra/envs/${{ inputs.environment }}
 
       # /tmp, matching where plan-destroy wrote it.
@@ -137,3 +162,24 @@ jobs:
       # changed since, instead of destroying something different than what was reviewed.
       - name: terragrunt destroy (apply saved plan)
         run: terragrunt apply -no-color /tmp/tfplan-destroy.binary
+
+  force-unlock:
+    if: inputs.lock_id != ''
+    runs-on: ubuntu-latest
+    # Shared dev/qa Environment with the destroy path above — qa still requires review for any
+    # state-mutating operation, even one that isn't destroying resources.
+    environment: ${{ inputs.environment }}
+    defaults:
+      run:
+        working-directory: infra/envs/${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/terragrunt-setup
+        with:
+          role_arn: ${{ inputs.environment == 'dev' && vars.DEV_AWS_ROLE_ARN || inputs.environment == 'qa' && vars.QA_AWS_ROLE_ARN }}
+          region: ${{ inputs.environment == 'dev' && vars.DEV_AWS_REGION || inputs.environment == 'qa' && vars.QA_AWS_REGION }}
+          working_directory: infra/envs/${{ inputs.environment }}
+
+      - name: terragrunt force-unlock
+        run: terragrunt force-unlock -force "${{ inputs.lock_id }}"

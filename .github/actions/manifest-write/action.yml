@@ -1,5 +1,5 @@
 name: Manifest write
-description: "Writes a deploy/<service>/<environment>-image.json manifest via the GitHub Contents API. Retries with a fresh SHA on a conflicting write."
+description: "Writes a deploy/<service>/image.json manifest via the GitHub Contents API, merging into the environment's own key. Retries with a fresh read on a conflicting write."
 
 inputs:
   service:
@@ -24,26 +24,27 @@ runs:
       run: |
         set -euo pipefail
 
-        PATH_IN_REPO="deploy/${{ inputs.service }}/${{ inputs.environment }}-image.json"
+        PATH_IN_REPO="deploy/${{ inputs.service }}/image.json"
         BRANCH="${{ github.ref_name }}"
-
-        CONTENT=$(cat <<EOF
-        {
-          "service": "${{ inputs.service }}",
-          "environment": "${{ inputs.environment }}",
-          "digest": "${{ inputs.digest }}",
-          "commitId": "${{ inputs.commit_id }}",
-          "deployedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        }
-        EOF
-        )
-        CONTENT_B64=$(printf '%s' "$CONTENT" | base64 | tr -d '\n')
+        DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
         MAX_ATTEMPTS=5
 
         for i in $(seq 1 "$MAX_ATTEMPTS"); do
-          # Blank SHA (file doesn't exist yet on this branch) is a valid first-write case, not an error.
+          # Re-read on every attempt, not just the SHA — a retry means someone else wrote a different
+          # environment's key in between, and merging against stale content would clobber it.
+          EXISTING=$(gh api "repos/${{ github.repository }}/contents/${PATH_IN_REPO}?ref=${BRANCH}" --jq '.content' 2>/dev/null | base64 -d 2>/dev/null || echo "{}")
           SHA=$(gh api "repos/${{ github.repository }}/contents/${PATH_IN_REPO}?ref=${BRANCH}" --jq '.sha' 2>/dev/null || echo "")
+
+          # Merges into this environment's key only — other environments' recorded deployments are left untouched.
+          CONTENT=$(echo "$EXISTING" | jq \
+            --arg service "${{ inputs.service }}" \
+            --arg env "${{ inputs.environment }}" \
+            --arg digest "${{ inputs.digest }}" \
+            --arg commitId "${{ inputs.commit_id }}" \
+            --arg deployedAt "$DEPLOYED_AT" \
+            '.service = $service | .[$env] = {digest: $digest, commitId: $commitId, deployedAt: $deployedAt}')
+          CONTENT_B64=$(printf '%s' "$CONTENT" | base64 | tr -d '\n')
 
           if gh api --method PUT "repos/${{ github.repository }}/contents/${PATH_IN_REPO}" \
             -f message="chore(deploy): record ${{ inputs.service }} ${{ inputs.environment }} deployment (${{ inputs.digest }})" \

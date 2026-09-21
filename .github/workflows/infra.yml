@@ -13,23 +13,21 @@ on:
     branches: [dev, qa, main]
     paths: ["infra/**", "backend/functions/**"]
 
-# JFROG_HOSTNAME / JFROG_STATE_BACKEND_REPOSITORY: required by root.hcl's get_env() (no fallback — fails loud if
-# unset). TF_TOKEN_...: Terraform's own login for that backend; name is mechanically derived from JFROG_HOSTNAME.
-# JFROG_ACCESS_TOKEN / JFROG_LAMBDA_ARTIFACTS_REPOSITORY: used by publish-lambda-functions.sh's JFrog build cache
-# (plain curl, unrelated to the state backend above).
+# JFROG_HOSTNAME / JFROG_STATE_BACKEND_REPOSITORY: required by root.hcl's get_env() (fails loud if unset).
+# TF_TOKEN_...: Terraform's login for that backend. JFROG_ACCESS_TOKEN / JFROG_USERNAME (from secrets.jf_api_thor
+# / vars.jf_usr_thor) and JFROG_LAMBDA_ARTIFACTS_REPOSITORY: used by publish-lambda-functions.sh's build cache.
 env:
   DOTNET_VERSION: "10.0.100"
-  # root.hcl reads its own environment's region via get_env("<ENV>_AWS_REGION") — no fallback,
-  # fails loud if unset. Exported unconditionally here rather than per-job, since every job only
-  # ever reads the one matching its own environment; the other two are present but unused.
+  TF_TOKEN_sphereco_jfrog_io: ${{ secrets.jf_api_thor }}
+  JFROG_HOSTNAME: ${{ vars.JFROG_HOSTNAME }}
+  JFROG_STATE_BACKEND_REPOSITORY: ${{ vars.JFROG_STATE_BACKEND_REPOSITORY}}
+  JFROG_ACCESS_TOKEN: ${{ secrets.jf_api_thor }}
+  JFROG_USERNAME: ${{ vars.jf_usr_thor }}
+  JFROG_LAMBDA_ARTIFACTS_REPOSITORY: ${{ vars.JFROG_LAMBDA_ARTIFACTS_REPOSITORY }}
+  TG_NON_INTERACTIVE: "true"
   DEV_AWS_REGION: ${{ vars.DEV_AWS_REGION }}
   QA_AWS_REGION: ${{ vars.QA_AWS_REGION }}
   PROD_AWS_REGION: ${{ vars.PROD_AWS_REGION }}
-  TF_TOKEN_trialc6mgth_jfrog_io: ${{ secrets.JFROG_ACCESS_TOKEN }}
-  JFROG_HOSTNAME: ${{ vars.JFROG_HOSTNAME }}
-  JFROG_STATE_BACKEND_REPOSITORY: ${{ vars.JFROG_STATE_BACKEND_REPOSITORY}}
-  JFROG_ACCESS_TOKEN: ${{ secrets.JFROG_ACCESS_TOKEN }}
-  JFROG_LAMBDA_ARTIFACTS_REPOSITORY: ${{ vars.JFROG_LAMBDA_ARTIFACTS_REPOSITORY }}
 
 # One run per branch at a time; never cancels mid-run to avoid a half-applied state.
 concurrency:
@@ -130,6 +128,7 @@ jobs:
       # Absolute /tmp path — terragrunt runs terraform from a hashed cache dir, not this working-directory.
       - name: terragrunt plan
         id: plan
+        shell: bash
         run: terragrunt plan -no-color -out=/tmp/tfplan.binary 2>&1 | tee /tmp/plan-output.txt
         continue-on-error: true
 
@@ -254,7 +253,6 @@ jobs:
       # linux/amd64: Fargate task defs default to X86_64. Only pushes to repos with zero images — never overwrites a real :latest.
       - name: Seed any empty ECR repo with the placeholder image
         env:
-          AWS_REGION: ${{ needs.context.outputs.environment == 'dev' && vars.DEV_AWS_REGION || needs.context.outputs.environment == 'qa' && vars.QA_AWS_REGION || needs.context.outputs.environment == 'prod' && vars.PROD_AWS_REGION }}
           ENVIRONMENT: ${{ needs.context.outputs.environment }}
           REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |

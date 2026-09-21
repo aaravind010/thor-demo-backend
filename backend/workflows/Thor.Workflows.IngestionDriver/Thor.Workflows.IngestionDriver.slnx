@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Thor.Workflows.IngestionDriver.Core/Thor.Workflows.IngestionDriver.Core.csproj" />
+    <Project Path="src/Thor.Workflows.IngestionDriver.Function/Thor.Workflows.IngestionDriver.Function.csproj" />
+  </Folder>
+  <Folder Name="/test/">
+    <Project Path="test/Thor.Workflows.IngestionDriver.Test/Thor.Workflows.IngestionDriver.Test.csproj" />
+  </Folder>
+</Solution>

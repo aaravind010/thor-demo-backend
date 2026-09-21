@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package thor.intelligence_engine.v1;
+
+option csharp_namespace = "Thor.IntelligenceEngine.Grpc.V1";
+
+// Base setup: one generic dispatch RPC. Concrete business agents are added
+// as new agent_name values / registry entries, not new RPCs (see
+// backend/services/Thor.IntelligenceEngine/src/thor_intelligence_engine/agents/registry.py).
+// Liveness is handled separately via the standard grpc.health.v1.Health service.
+service IntelligenceEngineService {
+  rpc InvokeAgent(InvokeAgentRequest) returns (InvokeAgentResponse);
+}
+
+message InvokeAgentRequest {
+  // Tenant already resolved and verified by Thor.Api before this call is made.
+  // Passed as a plain field, not a signed token — the Intelligence Engine is
+  // only reachable from Thor.Api over the private network (ADR §4), so the
+  // trust boundary here is network isolation, not an app-layer credential.
+  string tenant_id = 1;
+  string agent_name = 2;
+  string input = 3;
+}
+
+message InvokeAgentResponse {
+  string output = 1;
+}

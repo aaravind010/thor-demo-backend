@@ -4,42 +4,43 @@ locals {
   account_map = {
     dev = {
       account_name = "dev" # Account A, shared with qa
-      account_id   = "853973692277"
-      aws_region   = "us-west-2"
-      state_region = "us-east-1"
+      account_id   = get_aws_account_id()
+      aws_region   = get_env("${upper(local.environment)}_AWS_REGION")
     }
     qa = {
       account_name = "qa" # Account A, shared with dev
-      account_id   = "853973692277"
-      aws_region   = "us-west-2"
-      state_region = "us-east-1"
+      account_id   = get_aws_account_id()
+      aws_region   = get_env("${upper(local.environment)}_AWS_REGION")
     }
     prod = {
       account_name = "prod" # Account B, isolated from dev/qa
-      account_id   = ""
-      aws_region   = "us-east-1"
-      state_region = "us-east-1"
+      account_id   = get_aws_account_id()
+      aws_region   = get_env("${upper(local.environment)}_AWS_REGION")
     }
   }
+
   account = local.account_map[local.environment]
+
+  jfrog_hostname = get_env("JFROG_HOSTNAME")
+  repo_name      = get_env("JFROG_STATE_BACKEND_REPOSITORY")
 }
 
-# JFrog Cloud trial expired — reverted to S3, the pre-2026-08-11 backend (see commit a18e7e5 for the original
-# JFrog switch and its reasoning). No state migration: dev's JFrog-tracked state as of this revert was purely
-# from IAM-policy testing, not worth carrying over — this bucket/key starts fresh.
-remote_state {
-  backend = "s3"
-  generate = {
-    path      = "backend.tf"
-    if_exists = "overwrite_terragrunt"
+# Backend config via generate
+generate "backend" {
+  path      = "backend.tf"
+  if_exists = "overwrite_terragrunt"
+  contents  = <<EOF
+terraform {
+  backend "remote" {
+    hostname     = "${local.jfrog_hostname}"
+    organization = "${local.repo_name}"
+
+    workspaces {
+      name = "thor-${local.environment}-${local.account.aws_region}"
+    }
   }
-  config = {
-    bucket       = "thor-terraform-state-${local.account.account_id}"
-    key          = "thor-${local.environment}/terraform.tfstate"
-    region       = local.account.state_region
-    use_lockfile = true
-    encrypt      = true
-  }
+}
+EOF
 }
 
 generate "provider" {
@@ -65,7 +66,7 @@ provider "aws" {
     tags = {
       Project     = "thor-platform"
       Environment = "${local.environment}"
-      ManagedBy   = "terraform"
+      ManagedBy   = "terragrunt"
     }
   }
 }
@@ -74,8 +75,8 @@ EOF
 
 inputs = {
   environment = local.environment
-  account_id  = local.account.account_id
   aws_region  = local.account.aws_region
+  account_id  = local.account.account_id
 }
 
 # dotnet publish before plan/apply/destroy, so archive_file has real code to zip. Skippable via SKIP_LAMBDA_PUBLISH=true — used by CI's apply job, which already has the zip and doesn't need a rebuild.

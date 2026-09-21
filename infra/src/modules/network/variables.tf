@@ -14,11 +14,6 @@ variable "az_count" {
   default     = 2
 }
 
-# variable "public_subnet_cidrs" {
-#   type        = list(string)
-#   description = "CIDR blocks for public subnets, one per AZ (ALB + WAF live here)"
-# }
-
 variable "private_subnet_cidrs" {
   type        = list(string)
   description = "CIDR blocks for private subnets, one per AZ (ECS Fargate + Aurora/RDS Proxy live here)"

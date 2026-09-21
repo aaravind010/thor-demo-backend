@@ -3,10 +3,7 @@
 # CI-built image once one exists; delete this once none of the environments
 # reference it anymore.
 FROM nginx:alpine
-# Self-signed cert for the 8443 HTTPS listener — modules/ecs/services.tf's container health
-# check uses https+curl -k for every service now (task-api/intelligence-engine always, thor-api
-# whenever the NLB re-encrypts), and this placeholder has to pass that same check before any real
-# app image exists. 8080 stays too, for whichever health check variant ends up plain HTTP.
+# Self-signed cert so this placeholder also passes the new HTTPS healthcheck.
 RUN apk add --no-cache curl openssl \
  && echo "OK" > /usr/share/nginx/html/health \
  && mkdir -p /etc/nginx/certs \

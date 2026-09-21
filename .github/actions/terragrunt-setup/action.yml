@@ -6,14 +6,14 @@ inputs:
     required: true
   region:
     required: true
+  working_directory:
+    required: true
   terraform_version:
     required: false
     default: "1.15.6"
   terragrunt_version:
     required: false
     default: "1.1.2"
-  working_directory:
-    required: true
 
 runs:
   using: composite

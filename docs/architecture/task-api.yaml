@@ -1,0 +1,695 @@
+# This is NOT the actual API doc. This is a handwritten design doc with which the API was built.
+# The actual Open API doc for the current implementation is at `docs/apidocs`
+openapi: 3.0.3
+info:
+  title: Thor Task API
+  description: >
+    Connector-facing API for registering connectors, polling for tasks, reporting task
+    status/progress, and generating S3 presigned upload URLs. See
+    docs/architecture/Thor.TaskAPIDocument.md and docs/architecture/ADR.md (§5) for the
+    surrounding design.
+  version: "0.1.0"
+servers:
+  - url: /task-api
+    description: Routed through Thor.Api's /task-api proxy
+
+security: []
+
+tags:
+  - name: Registration
+    description: Connector authentication (API key exchange, token refresh)
+  - name: Tasks
+    description: Task polling, settings, status, and progress
+  - name: Scans
+    description: Scan-level progress aggregation
+  - name: Uploads
+    description: S3 presigned URL generation
+
+paths:
+  /register:
+    post:
+      tags: [Registration]
+      summary: Register the connector with the API key
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Access and refresh tokens issued for the connector.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthTokens"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /register/refresh:
+    post:
+      tags: [Registration]
+      summary: Refresh the access token using the refresh token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+      responses:
+        "200":
+          description: New access and refresh tokens.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthTokens"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /tasks:
+    get:
+      tags: [Tasks]
+      summary: Fetch the list of tasks available for connectors to work upon
+      description: >
+        Lists tasks waiting to be consumed by connectors. The Connector Hub calls this
+        endpoint and dispatches to connector instances based on each task's connector type.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: WorkTypeId
+          in: query
+          required: false
+          description: Filters tasks to a specific connector/work type.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Tasks currently available to be claimed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /task/{taskId}/settings:
+    get:
+      tags: [Tasks]
+      summary: Retrieve the settings for a connector task
+      description: >
+        `settings` carries the connector's configuration values. `authMethod` carries the
+        authentication method(s) to use against the target data source (Unix servers, AD,
+        database, etc). Both are opaque, connector-defined JSON documents encoded as strings.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      responses:
+        "200":
+          description: Task settings and auth method configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskSettingsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /task/{taskId}/status:
+    get:
+      tags: [Tasks]
+      summary: Get the current status of a task
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      responses:
+        "200":
+          description: Current status of the task.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskStatusResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Tasks]
+      summary: Update the status of a task
+      description: Called by the connector to report a task status transition.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskStatusUpdateRequest"
+      responses:
+        "200":
+          description: Status was updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskStatusUpdateResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /task/{taskId}/progress:
+    get:
+      tags: [Tasks]
+      summary: Get the progress history of a task
+      description: Returns the list of progress updates the connector has posted for a task.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      responses:
+        "200":
+          description: Task progress history.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskProgressResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [Tasks]
+      summary: Post a progress update for a task
+      description: >
+        Records a progress update — percentage complete, elapsed time, and connector-defined
+        item counts (e.g. users/groups scanned so far).
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskProgressUpdateRequest"
+      responses:
+        "200":
+          description: Progress update was recorded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskProgressUpdateResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /scan:
+    post:
+      tags: [Scans]
+      summary: Create a scan for a scan configuration
+      description: >
+        Creates a scan for the given scan configuration. If an active scan session already
+        exists for that scan configuration, returns the existing scan session and its tasks
+        instead of creating a new one.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateScanRequest"
+      responses:
+        "200":
+          description: The created (or existing active) scan, with its tasks.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateScanResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /scan/{scanId}/progress:
+    get:
+      tags: [Scans]
+      summary: Get aggregated progress for a scan
+      description: >
+        Returns every task that is part of the scan, each with its own progress history.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: scanId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Scan-level progress, broken down by task.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanProgressResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /task/presignedurl:
+    post:
+      tags: [Uploads]
+      summary: Generate a presigned URL for file upload
+      description: Called by the connector to obtain an S3 presigned URL for uploading a file.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PresignedUrlRequest"
+      responses:
+        "200":
+          description: Presigned upload URL and target object key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PresignedUrlResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+components:
+  parameters:
+    TaskId:
+      name: taskId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-TASK-API-KEY
+      description: Long-lived connector API key, exchanged for a JWT via POST /register.
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Short-lived access token issued by POST /register or POST /register/refresh.
+
+  responses:
+    BadRequest:
+      description: The request was malformed or failed validation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: The API key, access token, or refresh token is missing or invalid.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Forbidden:
+      description: The caller is authenticated but not permitted to perform this action.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: The referenced resource does not exist (or is not visible to this tenant).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        message:
+          type: string
+      required: [message]
+
+    AuthTokens:
+      type: object
+      properties:
+        accessToken:
+          type: string
+        refreshToken:
+          type: string
+      required: [accessToken, refreshToken]
+
+    RefreshRequest:
+      type: object
+      properties:
+        refreshToken:
+          type: string
+      required: [refreshToken]
+
+    TaskListItem:
+      type: object
+      properties:
+        taskId:
+          type: string
+          format: uuid
+        connectorType:
+          type: string
+          description: Identifier of the connector type this task targets.
+        authMethod:
+          type: string
+          description: Identifier of the authentication method to use against the data source.
+        sourceId:
+          type: string
+          format: uuid
+          description: Identifier of the data source this task operates on.
+      required: [taskId, connectorType, authMethod, sourceId]
+
+    TaskListResponse:
+      type: object
+      properties:
+        scanId:
+          type: string
+          format: uuid
+        scanConfigId:
+          type: string
+          format: uuid
+        tasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskListItem"
+      required: [scanId, scanConfigId, tasks]
+
+    TaskSettingsResponse:
+      type: object
+      properties:
+        taskId:
+          type: string
+          format: uuid
+        scanId:
+          type: string
+          format: uuid
+        scanConfigId:
+          type: string
+          format: uuid
+        settings:
+          type: string
+          description: Connector configuration, encoded as a JSON string.
+        authMethod:
+          type: string
+          description: Authentication method configuration for the data source, encoded as a JSON string.
+      required: [taskId, scanId, scanConfigId, settings, authMethod]
+
+    TaskStatus:
+      type: string
+      description: Current lifecycle state of a task.
+      example: in-progress
+
+    TaskStatusResponse:
+      type: object
+      properties:
+        taskId:
+          type: string
+          format: uuid
+        scanId:
+          type: string
+          format: uuid
+        scanConfigId:
+          type: string
+          format: uuid
+        dataSourceId:
+          type: string
+          format: uuid
+        connectorType:
+          type: string
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+        startedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+      required:
+        - taskId
+        - scanId
+        - scanConfigId
+        - dataSourceId
+        - connectorType
+        - status
+        - startedAt
+        - completedAt
+
+    TaskStatusUpdateRequest:
+      type: object
+      properties:
+        taskId:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+      required: [taskId, status]
+
+    TaskStatusUpdateResponse:
+      type: object
+      properties:
+        taskId:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+      required: [taskId, status]
+
+    ItemCount:
+      type: object
+      description: Connector-defined counters (e.g. users, groups scanned so far).
+      additionalProperties:
+        type: integer
+      example:
+        users: 20
+        groups: 10
+
+    TaskProgressEntry:
+      type: object
+      properties:
+        taskProgressId:
+          type: integer
+          format: int64
+        percentageComplete:
+          type: integer
+          minimum: 0
+          maximum: 100
+        timeElapsed:
+          type: integer
+          format: int64
+          description: Elapsed time in milliseconds.
+        itemCount:
+          $ref: "#/components/schemas/ItemCount"
+      required: [taskProgressId, percentageComplete, timeElapsed, itemCount]
+
+    TaskProgressResponse:
+      type: object
+      properties:
+        taskId:
+          type: string
+          format: uuid
+        dataSourceId:
+          type: string
+          format: uuid
+        scanId:
+          type: string
+          format: uuid
+        scanConfigId:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+        connectorType:
+          type: string
+        progressHistory:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskProgressEntry"
+      required:
+        - taskId
+        - dataSourceId
+        - scanId
+        - scanConfigId
+        - status
+        - connectorType
+        - progressHistory
+
+    TaskProgressUpdateRequest:
+      type: object
+      properties:
+        timeElapsed:
+          type: integer
+          format: int64
+          description: Elapsed time in milliseconds.
+        percentageComplete:
+          type: integer
+          minimum: 0
+          maximum: 100
+        itemCount:
+          $ref: "#/components/schemas/ItemCount"
+      required: [timeElapsed, percentageComplete, itemCount]
+
+    TaskProgressUpdateResponse:
+      type: object
+      properties:
+        taskProgressId:
+          type: integer
+          format: int64
+      required: [taskProgressId]
+
+    CreateScanRequest:
+      type: object
+      properties:
+        scanConfigId:
+          type: string
+          format: uuid
+      required: [scanConfigId]
+
+    ScanTaskSummary:
+      type: object
+      properties:
+        taskId:
+          type: string
+          format: uuid
+        connectorType:
+          type: string
+          description: Identifier of the connector type this task targets.
+        sourceId:
+          type: string
+          format: uuid
+          description: Identifier of the data source this task operates on.
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+      required: [taskId, connectorType, sourceId, status]
+
+    CreateScanResponse:
+      type: object
+      properties:
+        scanId:
+          type: string
+          format: uuid
+        scanConfigId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          description: Current lifecycle state of the scan.
+        tasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScanTaskSummary"
+      required: [scanId, scanConfigId, status, tasks]
+
+    ScanTaskProgress:
+      type: object
+      properties:
+        taskId:
+          type: string
+          format: uuid
+        dataSourceId:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+        connectorType:
+          type: string
+        progressHistory:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskProgressEntry"
+      required: [taskId, dataSourceId, status, connectorType, progressHistory]
+
+    ScanProgressResponse:
+      type: object
+      properties:
+        scanId:
+          type: string
+          format: uuid
+        scanConfigId:
+          type: string
+          format: uuid
+        tasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScanTaskProgress"
+      required: [scanId, scanConfigId, tasks]
+
+    PresignedUrlRequest:
+      type: object
+      properties:
+        taskId:
+          type: string
+          format: uuid
+        sourceId:
+          type: string
+          format: uuid
+        contentType:
+          type: string
+          description: MIME type of the file being uploaded.
+          example: application/octet-stream
+        fileName:
+          type: string
+          nullable: true
+          description: Optional file name; derived from taskId/sourceId when omitted.
+      required: [taskId, sourceId, contentType]
+
+    PresignedUrlResponse:
+      type: object
+      properties:
+        uploadUrl:
+          type: string
+          format: uri
+        objectKey:
+          type: string
+        expiresAtUTC:
+          type: string
+          format: date-time
+      required: [uploadUrl, objectKey, expiresAtUTC]

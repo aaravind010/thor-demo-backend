@@ -20,12 +20,12 @@ variable "aurora_database_name" {
 
 variable "authorizer_salt_secret_arn" {
   type        = string
-  description = "Secrets Manager ARN of the PBKDF2 salt — passed to the function as THOR_AUTHORIZER_SALT_SECRET_ID and used to scope secretsmanager:GetSecretValue"
+  description = "ARN of the Secrets Manager secret holding the shared PBKDF2 salt (module.secrets) — passed through as THOR_AUTHORIZER_SALT_SECRET_ID"
 }
 
 variable "iam_permissions_boundary_arn" {
   type        = string
-  description = "ARN of the Console-created thor-<environment>-role-boundary policy (see docs/infra_pipeline_setup_guide.md) — required on the authorizer's IAM role's permissions_boundary argument, or the deploy role's own iam:CreateRole grant rejects the call."
+  description = "ARN of the Console-created thor-<environment>-role-boundary policy"
 }
 
 variable "tags" {
@@ -55,4 +55,19 @@ variable "memory_size" {
 variable "authorizer_source_dir" {
   type        = string
   description = "Absolute path to lambda authorizer code"
+}
+
+variable "vpc_id" {
+  type        = string
+  description = "VPC ID to place the authorizer Lambda's ENIs in"
+}
+
+variable "private_subnet_ids" {
+  type        = list(string)
+  description = "Private subnet IDs for the authorizer Lambda's ENIs"
+}
+
+variable "vpc_endpoints_security_group_id" {
+  type        = string
+  description = "Security group shared by the VPC's interface endpoints (logs, secretsmanager, rds-data, cognito-idp) — the authorizer Lambda's egress is scoped to this, not 0.0.0.0/0"
 }

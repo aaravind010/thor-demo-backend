@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Thor.Auth</RootNamespace>
+    <AssemblyName>Thor.Auth</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <PackageId>Thor.Auth</PackageId>
+    <Version>0.1.0</Version>
+    <Description>Shared auth primitives: credential hashing (ADR §5.2) and JWT signing, used by both issuance and verification sides.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- test/ holds the separate Thor.Auth.Test project; exclude it from this project's own glob. -->
+    <Compile Remove="test\**" />
+    <Content Remove="test\**" />
+    <None Remove="test\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.22.0" />
+    <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" Version="8.22.0" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.10" />
+  </ItemGroup>
+
+</Project>

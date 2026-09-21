@@ -6,47 +6,47 @@ terraform {
   source = "../../src"
 }
 
-# Every value the root module accepts is spelled out below, same as envs/dev — only `environment` is left out, root.hcl supplies it.
+locals {
+  apex_domain = "sphereboarddev.ai" # Same domain dev's terragrunt.hcl creates — looked up here, not created (shared AWS account)
+}
+
+# Every value the root module accepts is spelled out below instead of relying on a default in infra/src/variables.tf; only `environment` is left out, since infra/root.hcl already supplies it for every environment.
 inputs = {
   # --- network ---
-  # qa's own VPC — 10.1.0.0/16 to stay non-overlapping with dev's 10.0.0.0/16 (same AWS account).
-  vpc_cidr             = "10.1.0.0/16"
+  vpc_cidr             = "10.0.0.0/16"
   az_count             = 2
-  public_subnet_cidrs  = ["10.1.0.0/24", "10.1.1.0/24"]
-  private_subnet_cidrs = ["10.1.10.0/24", "10.1.11.0/24"]
+  private_subnet_cidrs = ["10.0.10.0/24", "10.0.11.0/24"]
   enable_vpc_endpoints = true
 
   # --- ecs compute ---
+  # false until a real image has been pushed to each ECR repo below — the cluster/namespace/repos are created regardless.
   enable_compute            = false
   enable_container_insights = true
 
   # container_image = "" falls back to that service's own ECR repo at the "latest" tag; set it explicitly to pin a specific tag.
   services = {
     thor-api = {
-      container_image = ""
-      # 8443, thor-api terminates the NLB's re-encrypted TLS session itself (self-signed cert, see Program.cs).
-      # NLB's own external listener stays on 443 (nlb_listener_port below) — separate port.
-      container_port         = 8443
-      cpu                    = 512
-      memory                 = 1024
-      desired_count          = 2
-      min_healthy_percent    = 100
-      max_percent            = 200
-      health_check_path      = "/health"
-      log_retention_days     = 30
-      environment_variables  = {}
-      secrets                = {}
-      expose_via_nlb         = true
-      nlb_listener_port      = 443
-      nlb_test_listener_port = 8082
-      deployment_strategy    = "ROLLING"
-      bake_time_in_minutes   = 5
+      container_image       = ""
+      container_port        = 8443
+      cpu                   = 512  # 0.5 vCPU
+      memory                = 1024 # 1 GB
+      desired_count         = 2
+      min_healthy_percent   = 100
+      max_percent           = 200
+      health_check_path     = "/health"
+      log_retention_days    = 30
+      environment_variables = {}
+      secrets               = {}
+      expose_via_nlb        = true
+      nlb_listener_port     = 443
+      deployment_strategy   = "BLUE_GREEN"
+      bake_time_in_minutes  = 5
     }
     task-api = {
       container_image       = ""
       container_port        = 8443
-      cpu                   = 512
-      memory                = 1024
+      cpu                   = 512  # 0.5 vCPU
+      memory                = 1024 # 1 GB
       desired_count         = 2
       min_healthy_percent   = 100
       max_percent           = 200
@@ -55,14 +55,14 @@ inputs = {
       environment_variables = {}
       secrets               = {}
       expose_via_nlb        = false
-      deployment_strategy   = "ROLLING"
+      deployment_strategy   = "BLUE_GREEN"
       bake_time_in_minutes  = 5
     }
     intelligence-engine = {
       container_image       = ""
       container_port        = 8443
-      cpu                   = 512
-      memory                = 1024
+      cpu                   = 512  # 0.5 vCPU
+      memory                = 1024 # 1 GB
       desired_count         = 2
       min_healthy_percent   = 100
       max_percent           = 200
@@ -71,20 +71,17 @@ inputs = {
       environment_variables = {}
       secrets               = {}
       expose_via_nlb        = false
-      deployment_strategy   = "ROLLING"
+      deployment_strategy   = "BLUE_GREEN"
       bake_time_in_minutes  = 5
     }
   }
 
   # --- route53 + acm (hosted zones with their certificates nested) ---
-  # Off until dev's apply has actually created cndemo.com's zone — apex
-  # below is a lookup (create_zone = false), not a create, so it 404s until
-  # then. Turn this on once that's confirmed live.
-  enable_route53 = false
+  enable_route53 = true
 
   hosted_zones = {
-    # Same apex zone dev creates — looked up here, not created, so this
-    # doesn't fight dev over who owns cndemo.com.
+    # Apex zone: looked up, not created — dev already owns "sphereboarddev.ai" (shared AWS
+    # account). Requires dev's environment to be applied first, or this lookup fails.
     apex = {
       zone_name    = local.apex_domain
       create_zone  = false
@@ -92,18 +89,25 @@ inputs = {
     }
 
     thor = {
-      zone_name        = "qa.cndemo.com"
+      zone_name        = "qa.sphereboarddev.ai"
       parent_zone_name = local.apex_domain
+      # modules/acm auto-routes each cert's validation record to the zone that serves its hostname.
       certificates = {
+        # CloudFront (S3), us-east-1. include_wildcard covers tenant subdomains (tenant1.qa.sphereboarddev.ai).
         frontend = {
-          domain_name = "qa.cndemo.com"
+          domain_name      = "qa.sphereboarddev.ai"
+          include_wildcard = true
         }
-        api_gateway = {
-          domain_name = "api.qa.cndemo.com"
+        # CloudFront (API GW), us-east-1. include_wildcard covers per-tenant API routing (tenant1.api.qa.sphereboarddev.ai).
+        api = {
+          domain_name      = "api.qa.sphereboarddev.ai"
+          include_wildcard = true
         }
-        # NLB's TLS listener cert (re-encryption) — CN/SNI only, no DNS record needed.
+        # NLB TLS re-encryption (CN/SNI only). Only non-us-east-1 cert here — an NLB needs its cert
+        # in-region, so scope = "regional" (resolves against var.aws_region in main.tf).
         backend = {
-          domain_name = "backend.qa.cndemo.com"
+          domain_name = "backend.qa.sphereboarddev.ai"
+          scope       = "regional"
         }
       }
     }
@@ -114,22 +118,24 @@ inputs = {
   frontend_price_class     = "PriceClass_100"
   frontend_certificate_key = "thor/frontend"
 
-  # --- api gateway custom domain ---
-  api_gateway_certificate_key = "thor/api_gateway"
+  # --- api cdn (CloudFront in front of the API Gateway REST API) ---
+  api_cdn_certificate_key = "thor/api"
+  api_cdn_price_class     = "PriceClass_100"
+  api_cdn_waf_rate_limit  = 2000
 
   # --- nlb <-> ecs TLS re-encryption ---
   backend_certificate_key = "thor/backend"
 
   # --- database (Aurora PostgreSQL, task-api's) ---
+  # Low capacity + no deletion protection — qa is throwaway, cost-optimized.
   aurora_database_name         = "thor_qa_db"
   aurora_master_username       = "thor_admin"
   aurora_engine_version        = "16.13"
   aurora_min_capacity          = 0.5
   aurora_max_capacity          = 1
   aurora_backup_retention_days = 7
-  aurora_deletion_protection   = true
+  aurora_deletion_protection   = false
   aurora_skip_final_snapshot   = true
-
   # --- lambda authorizer ---
   authorizer_lambda_runtime     = "dotnet10"
   authorizer_lambda_timeout     = 60  # seconds
@@ -137,18 +143,8 @@ inputs = {
   # get_repo_root() stays valid across any Terragrunt cache copy. dotnet publish must have already written here.
   authorizer_source_dir = "${get_repo_root()}/backend/functions/Thor.Authorizer/publish"
 
-  # --- ingestion pipeline ---
-  enable_ingestion           = false
-  create_manifest_source_dir = "${get_repo_root()}/backend/functions/CreateManifest/publish"
-
-  # --- neptune graph db ---
-  enable_neptune                = true
-  neptune_engine_version        = "1.4.8.0"
-  neptune_min_capacity          = 1
-  neptune_max_capacity          = 8
-  neptune_backup_retention_days = 7
-  neptune_deletion_protection   = false
-  neptune_skip_final_snapshot   = true
+  # --- secret manager ---
+  secrets_recovery_window_in_days = 0
 
   tags = {}
 }

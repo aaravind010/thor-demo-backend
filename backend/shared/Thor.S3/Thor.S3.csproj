@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Thor.S3</RootNamespace>
+    <AssemblyName>Thor.S3</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <PackageId>Thor.S3</PackageId>
+    <Version>0.1.0</Version>
+    <Description>Shared S3 object-store mechanics (paginated listing, object buffering) used by workflow modules that read connector export files from S3.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AWSSDK.S3" Version="4.0.5" />
+  </ItemGroup>
+
+</Project>

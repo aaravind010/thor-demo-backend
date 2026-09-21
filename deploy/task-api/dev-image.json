@@ -1,7 +1,0 @@
-{
-  "service": "task-api",
-  "environment": "dev",
-  "digest": "877969058937.dkr.ecr.us-east-1.amazonaws.com/task-api-dev@sha256:8e78e3a3ebeaacc00b3f74a2d5fffd64bb8a1945ef3afed9662f672f6f9946dd",
-  "commitId": "65384daa24b08cb7a0b62dfb97866641d4132252",
-  "deployedAt": "2026-08-31T03:49:20Z"
-}

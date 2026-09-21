@@ -32,3 +32,8 @@ variable "zone_id" {
   description = "Hosted zone domain_name's alias record gets created in. Required when domain_name is set, unused otherwise."
   default     = ""
 }
+
+variable "global_region" {
+  type        = string
+  description = "Region the CLOUDFRONT-scoped WAFv2 web ACL is created through (us-east-1). Not this module's own region: see waf.tf."
+}
