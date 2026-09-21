@@ -143,6 +143,19 @@ inputs = {
   # get_repo_root() stays valid across any Terragrunt cache copy. dotnet publish must have already written here.
   authorizer_source_dir = "${get_repo_root()}/backend/functions/Thor.Authorizer/publish"
 
+  # --- ingestion pipeline ---
+  enable_ingestion           = false
+  create_manifest_source_dir = "${get_repo_root()}/backend/functions/Thor.CreateManifest/publish"
+
+  # --- neptune graph db ---
+  enable_neptune                = true
+  neptune_engine_version        = "1.4.8.0"
+  neptune_min_capacity          = 1
+  neptune_max_capacity          = 8
+  neptune_backup_retention_days = 7
+  neptune_deletion_protection   = false
+  neptune_skip_final_snapshot   = true
+
   # --- secret manager ---
   secrets_recovery_window_in_days = 0
 

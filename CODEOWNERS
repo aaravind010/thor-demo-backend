@@ -1,0 +1,3 @@
+# Manifest files record what's actually deployed in each environment and gate promotion between them — changes need a maintainer's review, not just CI.
+# Placeholder — replace with a real GitHub username or team before this is enforced.
+deploy/**/*.json @<maintainer-or-team>

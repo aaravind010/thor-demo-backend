@@ -53,6 +53,12 @@ variable "enable_compute" {
   default     = true
 }
 
+variable "enable_ingestion" {
+  type        = bool
+  description = "Whether to create the ingestion pipeline (S3 -> SQS -> EventBridge Pipe -> CreateManifest Lambda -> Step Functions -> ECS ingestion task, see modules/ingestion). The ECR repo is created regardless of this flag, so an image can be pushed before turning it on — everything else stays off until deliberately enabled."
+  default     = false
+}
+
 variable "services" {
   description = "Per-service configuration for the shared ECS cluster, keyed by service name. Must define thor-api, task-api, and intelligence-engine, with thor-api the only one setting expose_via_nlb = true (a private NLB reached via VPC Link from API Gateway, not the internet directly — no ALB). deployment_strategy=BLUE_GREEN is a per-deploy toggle (reserved for DB-schema-change deploys per deployment_strategy_plan.md), not a fixed per-service default."
   type = map(object({
@@ -144,6 +150,11 @@ variable "authorizer_lambda_memory_size" {
 variable "authorizer_source_dir" {
   type        = string
   description = "Absolute path to lambda authorizer code"
+}
+
+variable "create_manifest_source_dir" {
+  type        = string
+  description = "Absolute path to CreateManifest's dotnet publish output"
 }
 
 variable "secrets_recovery_window_in_days" {
@@ -281,6 +292,50 @@ variable "aurora_deletion_protection" {
 }
 
 variable "aurora_skip_final_snapshot" {
+  type        = bool
+  default     = true
+  description = "Should be false for prod, true for throwaway dev/qa environments"
+}
+
+# --- neptune (graph DB for intelligence-engine/task-api edge queries) ---
+
+variable "enable_neptune" {
+  type        = bool
+  description = "Whether to create the Neptune graph DB (module.neptune) — subnet group, security group + per-consumer ingress rules, and the serverless cluster/instance"
+  default     = false
+}
+
+variable "neptune_engine_version" {
+  type        = string
+  default     = "1.4.8.0"
+  description = "Neptune engine version — passed through to module.neptune"
+}
+
+variable "neptune_min_capacity" {
+  type        = number
+  default     = 1
+  description = "Neptune Serverless v2 minimum NCU"
+}
+
+variable "neptune_max_capacity" {
+  type        = number
+  default     = 2
+  description = "Neptune Serverless v2 maximum NCU"
+}
+
+variable "neptune_backup_retention_days" {
+  type        = number
+  default     = 7
+  description = "Neptune automated backup retention period"
+}
+
+variable "neptune_deletion_protection" {
+  type        = bool
+  default     = false
+  description = "Should be true for prod, false for throwaway dev/qa environments"
+}
+
+variable "neptune_skip_final_snapshot" {
   type        = bool
   default     = true
   description = "Should be false for prod, true for throwaway dev/qa environments"
