@@ -40,12 +40,22 @@ resource "aws_iam_role" "thor-lambda-authorizer-role" {
   assume_role_policy   = data.aws_iam_policy_document.thor-lambda-authorizer-assume-policy-document.json
   permissions_boundary = var.iam_permissions_boundary_arn
   tags                 = var.tags
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }
 
 resource "aws_cloudwatch_log_group" "thor-lambda-authorizer-logs" {
   name              = "/aws/lambda/${local.name_prefix}"
   retention_in_days = 30
   tags              = var.tags
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }
 
 resource "aws_security_group" "thor-lambda-authorizer-sg" {
@@ -62,6 +72,11 @@ resource "aws_security_group" "thor-lambda-authorizer-sg" {
   }
 
   tags = var.tags
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }
 
 # Replaces AWSLambdaBasicExecutionRole, scoped to this function's own log group; also grants Aurora Data API access and Secrets Manager reads for Aurora's secret.
@@ -122,4 +137,9 @@ resource "aws_lambda_function" "thor-authorizer-lambda" {
   depends_on = [aws_cloudwatch_log_group.thor-lambda-authorizer-logs, aws_iam_role_policy.thor_lambda_authorizer_permissions]
 
   tags = var.tags
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }

@@ -25,6 +25,11 @@ resource "aws_lb_target_group" "thor-nlb-tg-blue" {
   }
 
   tags = var.tags
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }
 
 resource "aws_lb_target_group" "thor-nlb-tg-green" {
@@ -45,6 +50,11 @@ resource "aws_lb_target_group" "thor-nlb-tg-green" {
   }
 
   tags = var.tags
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }
 
 # Attached at creation only — AWS doesn't allow adding a security group to an existing NLB, so this forces a destroy+recreate of aws_lb.thor-nlb on first apply. Ingress rule lives in security_groups.tf (nlb_from_vpc), not inline, to match the service SGs' pattern.
@@ -66,6 +76,11 @@ resource "aws_security_group" "nlb" {
   tags = merge(var.tags, {
     Name = "${local.name_prefix[each.key]}-nlb-sg"
   })
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }
 
 # Internal — reached via VPC Link from API Gateway (see the architecture doc), not directly from the internet.
@@ -81,6 +96,11 @@ resource "aws_lb" "thor-nlb" {
   tags = merge(var.tags, {
     Name = "thor-nlb-${var.environment}"
   })
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }
 
 # ECS modifies this listener's default_action directly during a blue/green deployment, so its own state must not fight that.
@@ -99,7 +119,7 @@ resource "aws_lb_listener" "thor-nlb-listener" {
   }
 
   lifecycle {
-    ignore_changes = [default_action]
+    ignore_changes = [default_action, tags, tags_all]
   }
 
   tags = var.tags
@@ -122,7 +142,7 @@ resource "aws_lb_listener" "thor-nlb-test-listener" {
   }
 
   lifecycle {
-    ignore_changes = [default_action]
+    ignore_changes = [default_action, tags, tags_all]
   }
 
   tags = var.tags
@@ -147,6 +167,11 @@ resource "aws_iam_role" "blue_green" {
   assume_role_policy   = data.aws_iam_policy_document.ecs_service_assume.json
   permissions_boundary = var.iam_permissions_boundary_arn
   tags                 = var.tags
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }
 
 data "aws_iam_policy_document" "blue_green_permissions" {

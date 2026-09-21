@@ -39,4 +39,9 @@ resource "aws_service_discovery_http_namespace" "thor-sc-namespace" {
   name        = "thor-${var.environment}.local"
   description = "Service Connect namespace for thor-${var.environment}"
   tags        = var.tags
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }

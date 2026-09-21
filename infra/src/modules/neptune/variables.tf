@@ -29,6 +29,24 @@ variable "create_ingress" {
   description = "Whether to create the consumer_security_group_ids ingress rules — wired to enable_compute at the root, not inferred from consumer_security_group_ids being non-empty (an empty map is ambiguous about why it's empty; this flag isn't)."
 }
 
+variable "create_bulk_load_role" {
+  type        = bool
+  default     = false
+  description = "Whether to create the IAM role the cluster assumes for bulk loads (aws_neptune_cluster.iam_roles) — wired to enable_ingestion at the root, since modules/ingestion's graph-load-start step is what starts loads. Its own flag rather than inferred from bulk_load_bucket_arn, which may be unknown until apply and so can't drive count."
+}
+
+variable "bulk_load_bucket_arn" {
+  type        = string
+  default     = ""
+  description = "The bucket the bulk-load role may read CSVs from — modules/ingestion's bucket. Only used when create_bulk_load_role is true."
+}
+
+variable "iam_permissions_boundary_arn" {
+  type        = string
+  default     = ""
+  description = "ARN of the account's Console-created thor-<environment>-role-boundary policy — required on the bulk-load role's permissions_boundary argument, or role creation is rejected. Only used when create_bulk_load_role is true."
+}
+
 variable "engine_version" {
   type        = string
   default     = "1.4.8.0"

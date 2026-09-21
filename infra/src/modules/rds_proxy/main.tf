@@ -30,6 +30,11 @@ resource "aws_security_group" "rds_proxy_security_group" {
   tags = merge(var.tags, {
     Name = "${local.name_prefix}-sg"
   })
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }
 
 # One rule per entry in allowed_security_group_ids — same pattern as the aurora module's own ingress rule.
@@ -46,6 +51,11 @@ resource "aws_vpc_security_group_ingress_rule" "rds_proxy_security_group_ingress
   tags = merge(var.tags, {
     Name = "${local.name_prefix}-${each.key}-ingress"
   })
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }
 
 data "aws_iam_policy_document" "rds_proxy_assume" {
@@ -64,6 +74,11 @@ resource "aws_iam_role" "rds_proxy_role" {
   assume_role_policy   = data.aws_iam_policy_document.rds_proxy_assume.json
   permissions_boundary = var.iam_permissions_boundary_arn
   tags                 = var.tags
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }
 
 # The proxy's own permissions — add more statements here as it needs more, not a new aws_iam_role_policy per permission.
@@ -75,7 +90,7 @@ data "aws_iam_policy_document" "rds_proxy_permissions" {
 }
 
 resource "aws_iam_role_policy" "rds_proxy_permissions" {
-  name   = "rds-proxy-permissions"
+  name   = "${local.name_prefix}-permissions"
   role   = aws_iam_role.rds_proxy_role.id
   policy = data.aws_iam_policy_document.rds_proxy_permissions.json
 }
@@ -95,6 +110,11 @@ resource "aws_db_proxy" "rds_proxy" {
   }
 
   tags = var.tags
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }
 
 resource "aws_db_proxy_default_target_group" "rds_proxy_target_group" {

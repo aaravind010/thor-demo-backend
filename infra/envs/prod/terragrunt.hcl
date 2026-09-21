@@ -135,8 +135,9 @@ inputs = {
   authorizer_source_dir = "${get_repo_root()}/backend/functions/Thor.Authorizer/publish"
 
   # --- ingestion pipeline ---
-  enable_ingestion           = false
-  create_manifest_source_dir = "${get_repo_root()}/backend/functions/Thor.CreateManifest/publish"
+  enable_ingestion            = false
+  create_manifest_source_dir  = "${get_repo_root()}/backend/functions/Thor.CreateManifest/publish"
+  ingestion_driver_source_dir = "${get_repo_root()}/backend/workflows/Thor.Workflows.IngestionDriver/publish"
 
   # --- neptune graph db ---
   enable_neptune                = true

@@ -20,6 +20,11 @@ resource "aws_cloudwatch_log_group" "thor-svc-logs" {
   name              = "/ecs/${var.environment}/${each.key}"
   retention_in_days = each.value.log_retention_days
   tags              = var.tags
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }
 
 resource "aws_ecs_task_definition" "thor-svc-taskdef" {
@@ -97,6 +102,11 @@ resource "aws_ecs_task_definition" "thor-svc-taskdef" {
   ])
 
   tags = var.tags
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }
 
 resource "aws_ecs_service" "thor-svc" {
@@ -169,7 +179,7 @@ resource "aws_ecs_service" "thor-svc" {
   # CI/CD updates task_definition/desired_count — Terraform must ignore both.
   # load_balancer temporarily NOT ignored: needed for one apply so a deployment_strategy change (e.g. ROLLING -> BLUE_GREEN) can actually push its required advanced_configuration through. Re-add load_balancer here once this apply succeeds, since blue/green's live primary-target-group swap needs it ignored again afterward.
   lifecycle {
-    ignore_changes = [desired_count]
+    ignore_changes = [desired_count, tags, tags_all]
   }
 
   # Depends on all instances of aws_lb_listener.thor-nlb-listener, which is zero for services with no listener — no conditional needed.

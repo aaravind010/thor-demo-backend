@@ -5,4 +5,9 @@ resource "aws_apigatewayv2_stage" "thor-apigw-stage" {
   auto_deploy = true
 
   tags = var.tags
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }

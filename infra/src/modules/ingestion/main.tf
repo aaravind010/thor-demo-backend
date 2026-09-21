@@ -1,5 +1,6 @@
 # Ingestion workflow: S3 -> SQS -> EventBridge Pipe -> CreateManifest (Lambda) -> Step Functions
-# -> ECS task, then retry-vs-DLQ. See pipe.tf/lambda.tf/state_machine.tf.
+# -> IngestionDriver (Lambda) picks Lambda or ECS for the steps, then retry-vs-DLQ. See
+# pipe.tf/lambda.tf/lambda_steps.tf/ecs_task.tf/state_machine.tf.
 
 terraform {
   required_version = ">= 1.15"
@@ -54,6 +55,68 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "s3_ingestion" {
   rule {
     apply_server_side_encryption_by_default {
       sse_algorithm = "AES256"
+    }
+  }
+}
+
+# Where extract-stage's Distributed Map writes per-file results (state_machine.tf's ResultWriter).
+# Deliberately not a prefix in s3_ingestion — that bucket's ObjectCreated notification below would
+# re-trigger the pipeline for every result object. Nothing reads these back; they expire.
+resource "aws_s3_bucket" "s3_map_results" {
+  count = local.ingestion_active ? 1 : 0
+
+  bucket = local.map_results_bucket_name
+  tags   = var.tags
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "s3_map_results" {
+  count = local.ingestion_active ? 1 : 0
+
+  bucket                  = aws_s3_bucket.s3_map_results[0].id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_ownership_controls" "s3_map_results" {
+  count = local.ingestion_active ? 1 : 0
+
+  bucket = aws_s3_bucket.s3_map_results[0].id
+  rule {
+    object_ownership = "BucketOwnerEnforced"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "s3_map_results" {
+  count = local.ingestion_active ? 1 : 0
+
+  bucket = aws_s3_bucket.s3_map_results[0].id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "s3_map_results" {
+  count = local.ingestion_active ? 1 : 0
+
+  bucket = aws_s3_bucket.s3_map_results[0].id
+
+  rule {
+    id     = "expire-map-results"
+    status = "Enabled"
+
+    filter {}
+
+    expiration {
+      days = var.map_results_retention_days
     }
   }
 }

@@ -127,6 +127,8 @@ resource "aws_iam_role" "ingestion_task_role" {
 }
 
 # Container's own runtime permissions — add statements here as needed, not a new policy resource.
+# Also the base of the per-step Lambda roles (lambda_steps.tf, via source_policy_documents), so the
+# two compute targets can't drift apart in what the step code is allowed to do.
 data "aws_iam_policy_document" "ingestion_task_permissions_document" {
   count = local.ingestion_active ? 1 : 0
 
@@ -230,21 +232,17 @@ resource "aws_ecs_task_definition" "ecs_ingestion_task_definition" {
       image     = local.resolved_ingestion_image
       essential = true
 
-      environment = [
-        { name = "THOR_STEP", value = each.key },
-        { name = "DB_HOST", value = var.db_host },
-        { name = "DB_NAME", value = var.db_name },
-        { name = "DB_PORT", value = "5432" },
-        { name = "NEPTUNE_ENDPOINT", value = var.neptune_endpoint },
-        { name = "NEPTUNE_PORT", value = "8182" },
-      ]
+      environment = concat(
+        [{ name = "THOR_STEP", value = each.key }],
+        [for k, v in local.workflow_environment : { name = k, value = v }],
+      )
 
-      # DB_HOST/DB_NAME/DB_PORT above are plain config, not secrets. Credentials come from Secrets
+      # local.workflow_environment is plain config, not secrets. Credentials come from Secrets
       # Manager via the execution role (ingestion_execution_secrets) — same JSON-key-suffix idiom
       # infra/src/main.tf's services_with_shared_secrets local already uses for thor-api/task-api.
       secrets = [
-        { name = "DB_USERNAME", valueFrom = "${var.aurora_secret_arn}:username::" },
-        { name = "DB_PASSWORD", valueFrom = "${var.aurora_secret_arn}:password::" },
+        { name = "THOR_MASTERDB_USER", valueFrom = "${var.aurora_secret_arn}:username::" },
+        { name = "THOR_MASTERDB_PASSWORD", valueFrom = "${var.aurora_secret_arn}:password::" },
       ]
 
       logConfiguration = {

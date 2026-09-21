@@ -152,20 +152,23 @@ own list-mode path) — see §10.1.
 
 ### 3.1 Result delivery & DLQ resourcing
 
-The Distributed Map's `ResultWriter` (S3) and the DLQ queue the per-file `Catch` reuses are, like
-the rest of the state machine, provisioned and managed **outside this repo** — there is no
-Terraform/CDK/ASL for this state machine checked into `thor_backend` (`infra/` is currently just a
-placeholder README); the live definition is maintained directly wherever it's deployed. This
-section records the intended shape only:
-- **`ResultWriter` bucket/prefix**: one S3 location per manifest run, e.g.
-  `s3://<bucket>/ingestion-map-results/{ScanManifestId}/{ExecutionName}/` — exact bucket name is
-  whatever the infra owner assigns; nothing in this repo reads these objects back.
+The state machine, the Distributed Map's `ResultWriter` bucket and the DLQ queue the per-file
+`Catch` reuses all live in `infra/src/modules/ingestion/` (`state_machine.tf`, with the shared
+state shapes in `locals.tf`); the compute targets are `lambda_steps.tf` (one Lambda per step) and
+`ecs_task.tf` (one task definition per step), and `lambda.tf` holds CreateManifest and the driver.
+- **`ResultWriter` bucket/prefix**: a bucket of its own (`thor-<env>-ingestion-map-results-<account>`,
+  not a prefix in the upload bucket, whose `ObjectCreated` notification would re-trigger the
+  pipeline), under `ingestion-map-results/{ScanManifestId}/{ExecutionName}/`; nothing in this
+  repo reads these objects back, and they expire after `map_results_retention_days`.
 - **DLQ queue**: the same SQS queue every other step's top-level `Catch` already sends to. A
   per-file DLQ message's body carries `TenantId`+`ScanId`+`FileLocation` — the idempotency-key
-  fields ADR §9/§12 call for — plus `ScanManifestId`/`BatchSeq`/`RunId`/`Error`/`Cause`, so a
-  redrive doesn't depend on parsing any exception message text.
-- **`MaxConcurrency`** on the Map should be tuned against per-tenant RDS Proxy connection limits
-  (ADR §9's noisy-neighbor concern) — not asserted here, since it's an infra-side tuning value.
+  fields ADR §9/§12 call for — plus `ScanManifestId`/`BatchSeq`/`RunId`/`FailedStep`/
+  `ComputeTarget`/`Error`, so a redrive doesn't depend on parsing any exception message text.
+- **`MaxConcurrency`** on the Map is `map_max_concurrency` (default 10) — tune it against
+  per-tenant RDS Proxy connection limits (ADR §9's noisy-neighbor concern).
+- **`RunId`** must be present in the execution input (null is fine): the state machine forwards
+  it with `"RunId.$": "$.RunId"`, and a missing path is an uncatchable `States.Runtime` error.
+  CreateManifest always emits it.
 
 **Identifiers threaded through every step:**
 - `TenantId` — selects the tenant DB and namespaces every graph id.

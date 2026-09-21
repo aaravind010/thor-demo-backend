@@ -18,6 +18,11 @@ resource "aws_security_group" "service" {
   tags = merge(var.tags, {
     Name = "${local.name_prefix[each.key]}-service-sg"
   })
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }
 
 # Public-facing services (thor-api): ingress restricted to the NLB's own security group, not the whole VPC CIDR.
@@ -32,6 +37,11 @@ resource "aws_vpc_security_group_ingress_rule" "public_from_nlb" {
   referenced_security_group_id = aws_security_group.nlb[each.key].id
 
   tags = var.tags
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }
 
 # NLB ingress: reached via VPC Link from API Gateway, so this allows the VPC Link's ENIs (anywhere in the VPC) rather than the internet.
@@ -46,6 +56,11 @@ resource "aws_vpc_security_group_ingress_rule" "nlb_from_vpc" {
   cidr_ipv4         = var.vpc_cidr
 
   tags = var.tags
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }
 
 # Blue/green test listener — same scoping as the production listener above.
@@ -60,6 +75,11 @@ resource "aws_vpc_security_group_ingress_rule" "nlb_test_from_vpc" {
   cidr_ipv4         = var.vpc_cidr
 
   tags = var.tags
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }
 
 # Internal-only services: ingress restricted to each public-facing peer's own security group, built as one map merged across every non-public service × public peer so it still holds if more than one service is ever expose_via_nlb = true.
@@ -81,4 +101,9 @@ resource "aws_vpc_security_group_ingress_rule" "internal_from_public_peers" {
   ip_protocol                  = "tcp"
 
   tags = var.tags
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }

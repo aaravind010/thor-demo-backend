@@ -157,6 +157,11 @@ variable "create_manifest_source_dir" {
   description = "Absolute path to CreateManifest's dotnet publish output"
 }
 
+variable "ingestion_driver_source_dir" {
+  type        = string
+  description = "Absolute path to Thor.Workflows.IngestionDriver's dotnet publish output"
+}
+
 variable "secrets_recovery_window_in_days" {
   type        = number
   description = "Days the authorizer salt secret stays recoverable after a destroy. 0 = delete immediately."

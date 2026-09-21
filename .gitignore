@@ -436,12 +436,15 @@ FodyWeavers.xsd
 *.tfvars.json
 **/.terraform.lock.hcl
 
-# Lambda function build artifacts
+# Lambda function build artifacts (scripts/publish-lambda-functions.sh scans both roots)
 backend/functions/*/publish/
 backend/functions/*/*.zip
 backend/functions/*/.publish-hash
 backend/functions/*/src/bin/
 backend/functions/*/src/obj/
+backend/workflows/*/publish/
+backend/workflows/*/*.zip
+backend/workflows/*/.publish-hash
 backend/functions/*/test/bin/
 backend/functions/*/test/obj/
 .DS_Store

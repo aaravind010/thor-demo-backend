@@ -100,8 +100,10 @@ jobs:
       - name: Tar lambda function build zips
         working-directory: ${{ github.workspace }}
         run: |
-          if compgen -G "backend/functions/*/*.zip" > /dev/null; then
-            tar -czf /tmp/lambda-zips.tar.gz -C backend/functions .
+          shopt -s nullglob
+          zips=(backend/functions/*/*.zip backend/workflows/*/*.zip)
+          if [ "${#zips[@]}" -gt 0 ]; then
+            tar -czf /tmp/lambda-zips.tar.gz "${zips[@]}"
           else
             echo "No lambda function zips found — nothing to tar (enable_authorizer/enable_ingestion likely off for this environment)."
           fi
@@ -153,7 +155,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           if [ -f /tmp/lambda-zips.tar.gz ]; then
-            tar -xzf /tmp/lambda-zips.tar.gz -C backend/functions
+            tar -xzf /tmp/lambda-zips.tar.gz
           else
             echo "No lambda-zips artifact downloaded — nothing to extract."
           fi

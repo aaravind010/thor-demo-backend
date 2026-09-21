@@ -8,6 +8,11 @@ resource "aws_route53_zone" "this" {
   tags = merge(var.tags, each.value.tags, {
     Name = each.key
   })
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }
 
 # Zones that already exist elsewhere (e.g. a parent domain someone else

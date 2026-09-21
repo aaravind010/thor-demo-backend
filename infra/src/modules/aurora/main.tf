@@ -23,6 +23,11 @@ resource "aws_db_subnet_group" "aurora_subnet_group" {
   tags = merge(var.tags, {
     Name = local.name_prefix
   })
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }
 
 # No inline ingress — kept in a separate aws_vpc_security_group_ingress_rule below, same reasoning as modules/ecs/security_groups.tf (avoids the same Terraform dependency-cycle risk).
@@ -42,6 +47,11 @@ resource "aws_security_group" "aurora_security_group" {
   tags = merge(var.tags, {
     Name = "${local.name_prefix}-sg"
   })
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }
 
 # RDS Proxy is mandatory, so this ingress rule is unconditional — it's the only consumer allowed to reach Aurora directly, thor/task-api go through it instead.
@@ -56,6 +66,11 @@ resource "aws_vpc_security_group_ingress_rule" "rds_proxy" {
   tags = merge(var.tags, {
     Name = "${local.name_prefix}-rds-proxy-ingress"
   })
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }
 
 # manage_master_user_password: AWS-generated/rotated in Secrets Manager, never touches Terraform state. enable_http_endpoint: RDS Data API, so a GitHub-hosted CI runner can reach this without VPC network access.
@@ -85,6 +100,11 @@ resource "aws_rds_cluster" "aurora_cluster" {
   tags = merge(var.tags, {
     Name = local.name_prefix
   })
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }
 
 # Serverless v2 still requires at least one instance resource even though capacity itself is elastic — this is what actually runs, the cluster above is just the control plane/storage layer.
@@ -98,4 +118,9 @@ resource "aws_rds_cluster_instance" "aurora_instance" {
   tags = merge(var.tags, {
     Name = "${local.name_prefix}-instance"
   })
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }

@@ -16,6 +16,10 @@ public sealed class StepFunctionsIngestionTrigger(IAmazonStepFunctions stepFunct
 {
     public async Task TriggerAsync(IngestionTriggerRequest request, CancellationToken cancellationToken = default)
     {
+        // RunId is always emitted (as null) rather than omitted: the state machine forwards it with
+        // "RunId.$": "$.RunId", and a missing path is an uncatchable States.Runtime error, whereas a
+        // null value passes through. A null RunId means workflow tracking keys on ScanManifestId
+        // (Thor.Workflows.Abstractions.WorkflowLifecycle).
         var input = JsonSerializer.Serialize(new
         {
             TenantId = request.TenantId,
@@ -23,6 +27,7 @@ public sealed class StepFunctionsIngestionTrigger(IAmazonStepFunctions stepFunct
             ScanId = request.ScanId,
             ScanManifestId = request.ScanManifestId,
             BatchSeq = 0,
+            RunId = (Guid?)null,
         });
 
         try

@@ -79,6 +79,52 @@ resource "aws_vpc_security_group_ingress_rule" "neptune" {
   }
 }
 
+# The role the cluster itself assumes to pull bulk-load CSVs from S3 (the loader's iamRoleArn —
+# Thor.Graph's INeptuneBulkLoaderClient). Distinct from any consumer's own role: those authorize
+# the neptune-db:StartLoaderJob call; this one is what Neptune uses to read the files. Reaching S3
+# from the cluster also needs modules/network's S3 gateway endpoint, which already exists.
+data "aws_iam_policy_document" "bulk_load_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["rds.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "bulk_load" {
+  count = var.create_bulk_load_role ? 1 : 0
+
+  name                 = "${local.name_prefix}-bulk-load"
+  assume_role_policy   = data.aws_iam_policy_document.bulk_load_assume.json
+  permissions_boundary = var.iam_permissions_boundary_arn
+  tags                 = var.tags
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
+}
+
+data "aws_iam_policy_document" "bulk_load_permissions" {
+  count = var.create_bulk_load_role ? 1 : 0
+
+  statement {
+    actions   = ["s3:GetObject", "s3:ListBucket"]
+    resources = [var.bulk_load_bucket_arn, "${var.bulk_load_bucket_arn}/*"]
+  }
+}
+
+resource "aws_iam_role_policy" "bulk_load" {
+  count = var.create_bulk_load_role ? 1 : 0
+
+  name   = "${local.name_prefix}-bulk-load-permissions"
+  role   = aws_iam_role.bulk_load[0].id
+  policy = data.aws_iam_policy_document.bulk_load_permissions[0].json
+}
+
 # iam_database_authentication_enabled, no master-password secret — Neptune uses SigV4/IAM DB auth
 # instead of Aurora's manage_master_user_password, so consumers authenticate via their own IAM
 # role/policy against the neptune-db:* actions, not a Secrets-Manager credential.
@@ -90,6 +136,7 @@ resource "aws_neptune_cluster" "neptune" {
   vpc_security_group_ids              = [aws_security_group.neptune.id]
   iam_database_authentication_enabled = true
   storage_encrypted                   = true
+  iam_roles                           = var.create_bulk_load_role ? [aws_iam_role.bulk_load[0].arn] : []
 
   backup_retention_period   = var.backup_retention_days
   deletion_protection       = var.deletion_protection

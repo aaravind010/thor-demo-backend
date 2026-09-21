@@ -289,10 +289,17 @@ module "rds_proxy" {
 
   iam_permissions_boundary_arn = local.iam_permissions_boundary_arn
 
-  allowed_security_group_ids = var.enable_compute ? {
-    thor-api = module.ecs.service_security_group_ids["thor-api"]
-    task-api = module.ecs.service_security_group_ids["task-api"]
-  } : {}
+  allowed_security_group_ids = merge(
+    var.enable_compute ? {
+      thor-api = module.ecs.service_security_group_ids["thor-api"]
+      task-api = module.ecs.service_security_group_ids["task-api"]
+    } : {},
+    # The ingestion ECS tasks and Lambda functions (CreateManifest, driver, per-step) all sit on
+    # this one SG and all read the Master DB through the proxy.
+    var.enable_ingestion ? {
+      ingestion = module.ingestion.task_security_group_id
+    } : {}
+  )
 
   tags = var.tags
 }
@@ -309,6 +316,7 @@ module "ingestion" {
   enable_container_insights    = var.enable_container_insights
   iam_permissions_boundary_arn = local.iam_permissions_boundary_arn
   create_manifest_source_dir   = var.create_manifest_source_dir
+  ingestion_driver_source_dir  = var.ingestion_driver_source_dir
 
   aurora_secret_arn = module.aurora.master_user_secret_arn
   db_host           = module.rds_proxy.endpoint
@@ -316,6 +324,7 @@ module "ingestion" {
 
   neptune_endpoint            = var.enable_neptune ? module.neptune[0].endpoint : ""
   neptune_cluster_resource_id = var.enable_neptune ? module.neptune[0].cluster_resource_id : ""
+  neptune_loader_role_arn     = var.enable_neptune ? module.neptune[0].bulk_load_role_arn : ""
 
   tags = var.tags
 }
@@ -348,6 +357,11 @@ module "neptune" {
   backup_retention_days = var.neptune_backup_retention_days
   deletion_protection   = var.neptune_deletion_protection
   skip_final_snapshot   = var.neptune_skip_final_snapshot
+
+  # The loader reads the CSVs module.ingestion's graph-load-start writes to its bucket.
+  create_bulk_load_role        = var.enable_ingestion
+  bulk_load_bucket_arn         = var.enable_ingestion ? module.ingestion.bucket_arn : ""
+  iam_permissions_boundary_arn = local.iam_permissions_boundary_arn
 
   tags = var.tags
 }
