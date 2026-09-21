@@ -37,6 +37,8 @@ locals {
     THOR_NEPTUNE_ENABLESSL           = "true"
     THOR_GRAPH_BULKLOAD_BUCKET       = local.bucket_name
     THOR_GRAPH_BULKLOAD_IAM_ROLE_ARN = var.neptune_loader_role_arn
+
+    THOR_GRAPH_BULKLOAD_START_STALE_SECONDS = tostring(var.graph_load_start_stale_seconds)
   }
 
   # Common ecs:runTask.sync Task-state shape, one per THOR_STEP — Next/ResultPath/Retry are merged

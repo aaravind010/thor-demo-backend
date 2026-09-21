@@ -147,7 +147,13 @@ variable "ingestion_driver_memory_size" {
 variable "ingestion_driver_max_bytes" {
   type        = number
   description = "THOR_INGESTION_DRIVER_MAX_BYTES: manifests whose files total at most this many bytes run on the Lambda branch; larger ones on ECS (ComputeTargetSelector.cs)."
-  default     = 268435456 # 256 MiB
+  default     = 5000000 # 5 MB
+}
+
+variable "graph_load_start_stale_seconds" {
+  type        = number
+  description = "THOR_GRAPH_BULKLOAD_START_STALE_SECONDS: how long a GraphBulkLoadJob may sit in 'starting' before graph-load-start treats the reservation as abandoned and takes it over (GraphLoadStartStep.cs)."
+  default     = 300
 }
 
 variable "ingestion_container_image" {

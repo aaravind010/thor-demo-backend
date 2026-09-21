@@ -113,10 +113,8 @@ resource "aws_lambda_function" "ingestion_step" {
   }
 
   # THOR_INPUT isn't set here: on Lambda the step's input is the invocation event, not an env var.
-  # THOR_MASTERDB_SECRET_ARN is readable (roles above) but Composition/TenantConnectionManagerFactory
-  # doesn't resolve it yet — it still expects THOR_MASTERDB_USER/PASSWORD, which only ECS's secrets
-  # block can inject. Until that factory resolves the secret ARN, these functions can't open a
-  # Master DB connection.
+  # Credentials come via THOR_MASTERDB_SECRET_ARN (Composition/TenantConnectionManagerFactory
+  # resolves it; the roles above grant the read) — Lambda has no equivalent of ECS's secrets block.
   environment {
     variables = merge(local.workflow_environment, {
       THOR_STEP                = each.key

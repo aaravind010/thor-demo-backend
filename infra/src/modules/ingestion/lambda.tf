@@ -213,11 +213,9 @@ resource "aws_lambda_function" "ingestion_driver" {
     security_group_ids = [aws_security_group.ingestion_task_sg[0].id]
   }
 
-  # Thor.Workflows.IngestionDriver.Function/CompositionRoot.cs's contract. THOR_MASTERDB_SECRET_ARN
-  # is supplied (and readable, above) for parity with CreateManifest, but the driver's
-  # TenantConnectionManagerFactory doesn't read it yet — it still expects THOR_MASTERDB_USER/
-  # PASSWORD, which Lambda can't inject the way ECS's secrets block does. Until that factory
-  # resolves the secret ARN, this function can't open a Master DB connection.
+  # Thor.Workflows.IngestionDriver.Function/CompositionRoot.cs's contract. Credentials come via
+  # THOR_MASTERDB_SECRET_ARN (its TenantConnectionManagerFactory resolves it) — Lambda has no
+  # equivalent of ECS's secrets block, so the function fetches the secret itself.
   environment {
     variables = {
       THOR_INGESTION_DRIVER_MAX_BYTES = tostring(var.ingestion_driver_max_bytes)
