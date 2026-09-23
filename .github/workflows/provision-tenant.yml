@@ -1,0 +1,89 @@
+name: Provision Tenant
+
+# On-demand tenant onboarding (ADR §11). Starts the tenant-provisioning Step Functions state
+# machine with the new tenant's details. No secret values are passed — only admin_email; Cognito
+# issues the temporary password via its invite flow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        type: choice
+        options: [dev, qa, prod]
+        required: true
+      display_name:
+        description: Tenant display name
+        type: string
+        required: true
+      subdomain:
+        description: Tenant subdomain (lowercase, e.g. acme)
+        type: string
+        required: true
+      admin_email:
+        description: Email of the tenant's first admin (receives a Cognito invite)
+        type: string
+        required: true
+      tier_id:
+        description: Tier id
+        type: string
+        default: "1"
+        required: true
+      isolation_type_id:
+        description: Isolation type id
+        type: string
+        default: "1"
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  # One provisioning run per subdomain+environment at a time.
+  group: provision-${{ inputs.environment }}-${{ inputs.subdomain }}
+  cancel-in-progress: false
+
+jobs:
+  start-execution:
+    runs-on: ubuntu-latest
+    # Reuses the shared per-env Environments; qa/prod require review before the job runs.
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.environment == 'dev' && vars.DEV_AWS_ROLE_ARN || inputs.environment == 'qa' && vars.QA_AWS_ROLE_ARN || vars.PROD_AWS_ROLE_ARN }}
+          # Region is per-environment (<ENV>_AWS_REGION), like every other workflow here.
+          # No fallback: a missing var must fail loudly, not silently target the wrong region.
+          aws-region: ${{ inputs.environment == 'dev' && vars.DEV_AWS_REGION || inputs.environment == 'qa' && vars.QA_AWS_REGION || vars.PROD_AWS_REGION }}
+
+      - name: Start tenant provisioning
+        env:
+          AWS_REGION: ${{ inputs.environment == 'dev' && vars.DEV_AWS_REGION || inputs.environment == 'qa' && vars.QA_AWS_REGION || vars.PROD_AWS_REGION }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          DISPLAY_NAME: ${{ inputs.display_name }}
+          SUBDOMAIN: ${{ inputs.subdomain }}
+          ADMIN_EMAIL: ${{ inputs.admin_email }}
+          TIER_ID: ${{ inputs.tier_id }}
+          ISOLATION_TYPE_ID: ${{ inputs.isolation_type_id }}
+        run: |
+          set -euo pipefail
+
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          STATE_MACHINE_ARN="arn:aws:states:${AWS_REGION}:${ACCOUNT_ID}:stateMachine:thor-${ENVIRONMENT}-tenant-provisioning"
+
+          # Build the execution input as ProvisioningState. jq --arg escapes every value, so
+          # nothing here can break out of the JSON. TierId/IsolationTypeId are coerced to numbers.
+          INPUT=$(jq -n \
+            --arg displayName "$DISPLAY_NAME" \
+            --arg subdomain "$SUBDOMAIN" \
+            --arg adminEmail "$ADMIN_EMAIL" \
+            --argjson tierId "$TIER_ID" \
+            --argjson isolationTypeId "$ISOLATION_TYPE_ID" \
+            '{DisplayName: $displayName, Subdomain: $subdomain, AdminEmail: $adminEmail, TierId: $tierId, IsolationTypeId: $isolationTypeId}')
+
+          echo "Starting execution on ${STATE_MACHINE_ARN}"
+          aws stepfunctions start-execution \
+            --state-machine-arn "$STATE_MACHINE_ARN" \
+            --name "provision-${SUBDOMAIN}-$(date +%s)" \
+            --input "$INPUT"

@@ -12,13 +12,13 @@ terraform {
 locals {
   name_prefix = "thor-${var.environment}-aurora"
 
-  # Falls back to a per-environment name — underscores, since unquoted Postgres identifiers can't use hyphens.
+  # Falls back to a per-environment Postgres database name when left blank — underscores, not hyphens, since unquoted Postgres identifiers can't contain them.
   database_name = var.database_name != "" ? var.database_name : "thor_${var.environment}_db"
 }
 
 resource "aws_db_subnet_group" "aurora_subnet_group" {
-  name_prefix = "${local.name_prefix}-subnet-group"
-  subnet_ids  = var.private_subnet_ids
+  name       = local.name_prefix
+  subnet_ids = var.private_subnet_ids
 
   tags = merge(var.tags, {
     Name = local.name_prefix
@@ -30,20 +30,11 @@ resource "aws_db_subnet_group" "aurora_subnet_group" {
   }
 }
 
-# No inline ingress — separate rule below, same dependency-cycle reasoning as ecs/security_groups.tf.
-# name_prefix + create_before_destroy: a description change (or anything else forcing replacement) needs the new
-# SG created — and the live Aurora cluster repointed at it — before the old one is destroyed. A fixed name would
-# collide with the still-existing old SG the moment Terraform tries to create the replacement.
+# No inline ingress — kept in a separate aws_vpc_security_group_ingress_rule below, same reasoning as modules/ecs/security_groups.tf (avoids the same Terraform dependency-cycle risk).
 resource "aws_security_group" "aurora_security_group" {
-  name_prefix = "${local.name_prefix}-sg-"
-  description = "Aurora PostgreSQL - ingress per allowed_security_group_ids, egress scoped to the VPC"
+  name        = "${local.name_prefix}-sg"
+  description = "Aurora PostgreSQL - ingress from RDS Proxy only, egress scoped to the VPC"
   vpc_id      = var.vpc_id
-
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
-  lifecycle {
-    create_before_destroy = true
-    ignore_changes        = [tags, tags_all]
-  }
 
   egress {
     description = "Within VPC only"
@@ -56,21 +47,24 @@ resource "aws_security_group" "aurora_security_group" {
   tags = merge(var.tags, {
     Name = "${local.name_prefix}-sg"
   })
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }
 
-# One rule per entry in allowed_security_group_ids — map keys (not the IDs) are what for_each uses, see variables.tf.
-resource "aws_vpc_security_group_ingress_rule" "allowed" {
-  for_each = var.allowed_security_group_ids
-
+# RDS Proxy is mandatory, so this ingress rule is unconditional — it's the only consumer allowed to reach Aurora directly, thor/task-api go through it instead.
+resource "aws_vpc_security_group_ingress_rule" "rds_proxy" {
   security_group_id            = aws_security_group.aurora_security_group.id
-  description                  = "PostgreSQL from ${each.key}"
-  referenced_security_group_id = each.value
+  description                  = "PostgreSQL from RDS Proxy"
+  referenced_security_group_id = var.rds_proxy_security_group_id
   from_port                    = 5432
   to_port                      = 5432
   ip_protocol                  = "tcp"
 
   tags = merge(var.tags, {
-    Name = "${local.name_prefix}-${each.key}-ingress"
+    Name = "${local.name_prefix}-rds-proxy-ingress"
   })
 
   # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
@@ -79,7 +73,7 @@ resource "aws_vpc_security_group_ingress_rule" "allowed" {
   }
 }
 
-# manage_master_user_password: AWS-rotated in Secrets Manager, never in state. enable_http_endpoint: RDS Data API, reachable from CI with no VPC access.
+# manage_master_user_password: AWS-generated/rotated in Secrets Manager, never touches Terraform state. enable_http_endpoint (RDS Data API) is deliberately OFF: the DB must never be reachable from outside the VPC — every connection comes from in-VPC compute/Lambdas over IAM (see ADR §6.2).
 resource "aws_rds_cluster" "aurora_cluster" {
   cluster_identifier     = local.name_prefix
   engine                 = "aurora-postgresql"
@@ -91,15 +85,17 @@ resource "aws_rds_cluster" "aurora_cluster" {
 
   manage_master_user_password = true
   storage_encrypted           = true
-  enable_http_endpoint        = true
+  enable_http_endpoint        = false
+
+  # DB auth is RDS IAM end-to-end (see ADR §6.2): the runtime connects through the RDS Proxy
+  # with IAM tokens, and the tenant-provisioning Lambdas connect directly with IAM tokens.
+  iam_database_authentication_enabled = var.iam_database_authentication_enabled
 
   backup_retention_period   = var.backup_retention_days
   deletion_protection       = var.deletion_protection
   skip_final_snapshot       = var.skip_final_snapshot
   final_snapshot_identifier = var.skip_final_snapshot ? null : "${local.name_prefix}-final"
 
-  # No underscore before "v2" here, unlike aws_neptune_cluster's serverless_v2_scaling_configuration
-  # (modules/neptune/main.tf) — a real provider-schema inconsistency, not a typo to "fix" either side.
   serverlessv2_scaling_configuration {
     min_capacity = var.min_capacity
     max_capacity = var.max_capacity
@@ -115,7 +111,7 @@ resource "aws_rds_cluster" "aurora_cluster" {
   }
 }
 
-# Serverless v2 still needs one instance resource — this is what actually runs; the cluster above is storage/control only.
+# Serverless v2 still requires at least one instance resource even though capacity itself is elastic — this is what actually runs, the cluster above is just the control plane/storage layer.
 resource "aws_rds_cluster_instance" "aurora_instance" {
   identifier         = "${local.name_prefix}-instance"
   cluster_identifier = aws_rds_cluster.aurora_cluster.id
@@ -125,24 +121,6 @@ resource "aws_rds_cluster_instance" "aurora_instance" {
 
   tags = merge(var.tags, {
     Name = "${local.name_prefix}-instance"
-  })
-
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
-  lifecycle {
-    ignore_changes = [tags, tags_all]
-  }
-}
-
-# Second instance for Multi-AZ failover — kept as its own resource, not for_each, so it's purely additive.
-resource "aws_rds_cluster_instance" "aurora_instance_2" {
-  identifier         = "${local.name_prefix}-instance-2"
-  cluster_identifier = aws_rds_cluster.aurora_cluster.id
-  instance_class     = "db.serverless"
-  engine             = aws_rds_cluster.aurora_cluster.engine
-  engine_version     = aws_rds_cluster.aurora_cluster.engine_version
-
-  tags = merge(var.tags, {
-    Name = "${local.name_prefix}-instance-2"
   })
 
   # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.

@@ -13,7 +13,7 @@ data "aws_caller_identity" "current" {}
 
 locals {
   name_prefix = "thor-${var.environment}-frontend"
-  # Globally unique — bucket names share a namespace across all of AWS
+  # Globally unique — bucket names share a namespace across all of AWS, not just this account.
   bucket_name = "thor-frontend-${var.environment}-${data.aws_caller_identity.current.account_id}"
 
   use_custom_domain = var.domain_name != ""
@@ -83,7 +83,7 @@ resource "aws_cloudfront_distribution" "thor-fe-cdn" {
     cache_policy_id = "658327ea-f89d-4fab-a63d-7e88639e58f6"
   }
 
-  # SPA routing — unmatched paths fall back to index.html instead of S3's raw 403/404.
+  # SPA client-side routing — any path that isn't a real object in the bucket (a React Router route, for example) falls back to index.html instead of surfacing S3's 403/404 to the browser.
   custom_error_response {
     error_code         = 403
     response_code      = 200
@@ -124,7 +124,7 @@ resource "aws_cloudfront_distribution" "thor-fe-cdn" {
 }
 
 # Only created once domain_name is set — CloudFront's own hosted_zone_id
-# (Z2FDTNDATAQYW2) is a fixed, well-known constant for every distribution
+# is a fixed, well-known constant for every distribution
 # globally, not something looked up per-region.
 resource "aws_route53_record" "alias_a" {
   count = local.use_custom_domain ? 1 : 0

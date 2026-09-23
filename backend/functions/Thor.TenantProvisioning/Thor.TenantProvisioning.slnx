@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Thor.TenantProvisioning.Core/Thor.TenantProvisioning.Core.csproj" />
+    <Project Path="src/Thor.TenantProvisioning.Function/Thor.TenantProvisioning.Function.csproj" />
+  </Folder>
+  <Folder Name="/test/">
+    <Project Path="test/Thor.TenantProvisioning.Test/Thor.TenantProvisioning.Test.csproj" />
+  </Folder>
+</Solution>

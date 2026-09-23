@@ -15,7 +15,9 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: backend/services/${{ inputs.service }}
+        # inputs.service is the Terraform/ECS service key (thor-api/task-api/intelligence-engine); the actual
+        # source folders are PascalCase (Thor.API/Thor.TaskAPI/Thor.IntelligenceEngine), so map here.
+        working-directory: backend/services/${{ inputs.service == 'thor-api' && 'Thor.API' || inputs.service == 'task-api' && 'Thor.TaskAPI' || 'Thor.IntelligenceEngine' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -24,30 +26,37 @@ jobs:
         if: inputs.service != 'intelligence-engine'
         run: |
           dotnet restore
-          dotnet build --no-restore -c Release
+          dotnet build --no-restore -c Release -p:OpenApiGenerateDocumentsOnBuild=false
 
       # continue-on-error: fast feedback, not a gate.
       - name: Run unit tests (.NET)
         if: inputs.service != 'intelligence-engine'
         continue-on-error: true
         run: |
-          if find . -iname '*.tests.csproj' | grep -q .; then
+          if find . -iname '*.test.csproj' | grep -q .; then
             dotnet test --no-build -c Release
           else
             echo "No test project found, skipping."
           fi
 
+      - name: Install uv (Python)
+        if: inputs.service == 'intelligence-engine'
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
       - name: Install dependencies (Python)
         if: inputs.service == 'intelligence-engine'
-        run: pip install -r requirements.txt
+        run: uv sync --frozen
+
+      - name: Generate gRPC stubs (Python)
+        if: inputs.service == 'intelligence-engine'
+        run: uv run python scripts/generate_grpc.py
 
       - name: Run unit tests (Python)
         if: inputs.service == 'intelligence-engine'
         continue-on-error: true
         run: |
           if [ -d tests ] || ls test_*.py >/dev/null 2>&1; then
-            pip install pytest
-            pytest
+            uv run pytest
           else
             echo "No tests found, skipping."
           fi

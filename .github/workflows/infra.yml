@@ -3,33 +3,35 @@ name: Infra
 # Reviews and applies Terraform/Terragrunt changes for dev, qa, prod.
 # PR: read-only checks. Push: same checks, then applies — auto for dev, approval-gated for qa/prod via GitHub
 # Environments shared with backend deploy. Both triggers fire on a merge; only the push side applies.
+# This is the only workflow that builds and deploys the Lambdas, so the path filter has to cover everything
+# that lands in a Lambda zip — not just infra/ and backend/functions/, but backend/workflows/ (the ingestion
+# driver ships as a zip too), backend/shared/ (pulled in by ProjectReference) and the publish script that
+# assembles the payload. Omitting them means a shared-only change never redeploys the functions that embed it.
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
     branches: [dev, qa, main]
-    paths: ["infra/**", "backend/functions/**"]
+    paths: ["infra/**", "backend/functions/**", "backend/workflows/**", "backend/shared/**", "scripts/publish-lambda-functions.sh", ".github/workflows/infra.yml"]
   push:
     branches: [dev, qa, main]
-    paths: ["infra/**", "backend/functions/**"]
+    paths: ["infra/**", "backend/functions/**", "backend/workflows/**", "backend/shared/**", "scripts/publish-lambda-functions.sh", ".github/workflows/infra.yml"]
 
-# JFROG_HOSTNAME / JFROG_STATE_BACKEND_REPOSITORY: required by root.hcl's get_env() (no fallback — fails loud if
-# unset). TF_TOKEN_...: Terraform's own login for that backend; name is mechanically derived from JFROG_HOSTNAME.
-# JFROG_ACCESS_TOKEN / JFROG_LAMBDA_ARTIFACTS_REPOSITORY: used by publish-lambda-functions.sh's JFrog build cache
-# (plain curl, unrelated to the state backend above).
+# JFROG_HOSTNAME / JFROG_STATE_BACKEND_REPOSITORY: required by root.hcl's get_env() (fails loud if unset).
+# TF_TOKEN_...: Terraform's login for that backend. JFROG_ACCESS_TOKEN / JFROG_USERNAME (from secrets.jf_api_thor
+# / vars.jf_usr_thor) and JFROG_LAMBDA_ARTIFACTS_REPOSITORY: used by publish-lambda-functions.sh's build cache.
 env:
   DOTNET_VERSION: "10.0.100"
-  # root.hcl reads its own environment's region via get_env("<ENV>_AWS_REGION") — no fallback,
-  # fails loud if unset. Exported unconditionally here rather than per-job, since every job only
-  # ever reads the one matching its own environment; the other two are present but unused.
+  TF_TOKEN_sphereco_jfrog_io: ${{ secrets.jf_api_thor }}
+  JFROG_HOSTNAME: ${{ vars.JFROG_HOSTNAME }}
+  JFROG_STATE_BACKEND_REPOSITORY: ${{ vars.JFROG_STATE_BACKEND_REPOSITORY}}
+  JFROG_ACCESS_TOKEN: ${{ secrets.jf_api_thor }}
+  JFROG_USERNAME: ${{ vars.jf_usr_thor }}
+  JFROG_LAMBDA_ARTIFACTS_REPOSITORY: ${{ vars.JFROG_LAMBDA_ARTIFACTS_REPOSITORY }}
+  TG_NON_INTERACTIVE: "true"
   DEV_AWS_REGION: ${{ vars.DEV_AWS_REGION }}
   QA_AWS_REGION: ${{ vars.QA_AWS_REGION }}
   PROD_AWS_REGION: ${{ vars.PROD_AWS_REGION }}
-  TF_TOKEN_trialc6mgth_jfrog_io: ${{ secrets.JFROG_ACCESS_TOKEN }}
-  JFROG_HOSTNAME: ${{ vars.JFROG_HOSTNAME }}
-  JFROG_STATE_BACKEND_REPOSITORY: ${{ vars.JFROG_STATE_BACKEND_REPOSITORY}}
-  JFROG_ACCESS_TOKEN: ${{ secrets.JFROG_ACCESS_TOKEN }}
-  JFROG_LAMBDA_ARTIFACTS_REPOSITORY: ${{ vars.JFROG_LAMBDA_ARTIFACTS_REPOSITORY }}
 
 # One run per branch at a time; never cancels mid-run to avoid a half-applied state.
 concurrency:
@@ -130,6 +132,7 @@ jobs:
       # Absolute /tmp path — terragrunt runs terraform from a hashed cache dir, not this working-directory.
       - name: terragrunt plan
         id: plan
+        shell: bash
         run: terragrunt plan -no-color -out=/tmp/tfplan.binary 2>&1 | tee /tmp/plan-output.txt
         continue-on-error: true
 
@@ -140,18 +143,36 @@ jobs:
         with:
           name: tfplan-${{ needs.context.outputs.environment }}
           path: /tmp/tfplan.binary
-          retention-days: 1
+          # Must outlive the gap between plan and apply — on qa/prod that gap is however long the
+          # Environment approval sits unreviewed, and re-running just the apply job after the artifacts
+          # expire leaves it applying a plan whose zips are gone.
+          retention-days: 7
 
-      # apply doesn't rebuild the zip, so it must cross to apply-terragrunt too — tarred as one file for a reliable transfer.
-      - name: Tar lambda function build zips
+      # apply doesn't rebuild these, so they must cross to apply-terragrunt — tarred as one file for a
+      # reliable transfer. Both halves are needed: aws_lambda_function reads the zip, and each module's
+      # data.archive_file is re-read during apply, which stats its source_dir (the publish/ dir) before
+      # anything else — restoring the zip alone fails with "could not archive missing directory".
+      # tar preserves mtimes, so the re-read recomputes the same output_base64sha256 the plan recorded.
+      # Every environment instantiates lambda/db_bootstrap/master_db_seed unconditionally, so a successful
+      # plan always leaves both behind; either one missing means the plan never wrote them, and letting that
+      # slide only moves the failure to apply, where terraform reports it far less legibly.
+      - name: Tar lambda function build zips and publish dirs
         if: steps.plan.outcome == 'success'
         working-directory: ${{ github.workspace }}
         run: |
-          if compgen -G "backend/functions/*/*.zip" > /dev/null; then
-            tar -czf /tmp/lambda-zips.tar.gz -C backend/functions .
-          else
-            echo "No lambda function zips found — nothing to tar (enable_authorizer is likely off for this environment)."
+          shopt -s nullglob
+          zips=(backend/functions/*/*.zip backend/workflows/*/*.zip)
+          pubs=(backend/functions/*/publish backend/workflows/*/publish)
+          if [ "${#zips[@]}" -eq 0 ]; then
+            echo "::error::terragrunt plan produced no lambda build zips — apply would fail reading them." >&2
+            exit 1
           fi
+          if [ "${#pubs[@]}" -eq 0 ]; then
+            echo "::error::no lambda publish/ dirs found — apply's archive_file re-read would fail on the missing source_dir." >&2
+            exit 1
+          fi
+          printf 'tarring %s\n' "${zips[@]}" "${pubs[@]}"
+          tar -czf /tmp/lambda-zips.tar.gz "${zips[@]}" "${pubs[@]}"
 
       - name: Upload lambda function build zips
         if: steps.plan.outcome == 'success'
@@ -159,8 +180,8 @@ jobs:
         with:
           name: lambda-zips-${{ needs.context.outputs.environment }}
           path: /tmp/lambda-zips.tar.gz
-          retention-days: 1
-          if-no-files-found: ignore
+          retention-days: 7
+          if-no-files-found: error
 
       # Skipped on push runs — no PR to comment on.
       - name: Post plan to PR
@@ -214,23 +235,21 @@ jobs:
           name: tfplan-${{ needs.context.outputs.environment }}
           path: /tmp
 
-      # continue-on-error: no artifact exists when enable_authorizer was off for this plan, which is fine.
+      # Not continue-on-error: this job never rebuilds (SKIP_LAMBDA_PUBLISH), so a missing artifact — expired
+      # retention, or an apply job re-run long after its plan — means the zips the saved plan points at will
+      # not exist on disk. Failing here names the real cause instead of surfacing it as a terraform file error.
       - name: Download lambda function build zips
         uses: actions/download-artifact@v4
-        continue-on-error: true
         with:
           name: lambda-zips-${{ needs.context.outputs.environment }}
           path: /tmp
 
-      # Restores the same layout the tar step recorded; skips cleanly if nothing was downloaded.
+      # Restores the same layout the tar step recorded, at the same absolute paths root.hcl's
+      # get_repo_root() hands the modules as var.*_source_dir.
       - name: Untar lambda function build zips
         working-directory: ${{ github.workspace }}
         run: |
-          if [ -f /tmp/lambda-zips.tar.gz ]; then
-            tar -xzf /tmp/lambda-zips.tar.gz -C backend/functions
-          else
-            echo "No lambda-zips artifact downloaded — nothing to extract."
-          fi
+          tar -xzvf /tmp/lambda-zips.tar.gz
 
       # Applies the exact plan reviewed — fails as stale if state changed since, instead of applying something different.
       - name: terragrunt apply
@@ -254,7 +273,6 @@ jobs:
       # linux/amd64: Fargate task defs default to X86_64. Only pushes to repos with zero images — never overwrites a real :latest.
       - name: Seed any empty ECR repo with the placeholder image
         env:
-          AWS_REGION: ${{ needs.context.outputs.environment == 'dev' && vars.DEV_AWS_REGION || needs.context.outputs.environment == 'qa' && vars.QA_AWS_REGION || needs.context.outputs.environment == 'prod' && vars.PROD_AWS_REGION }}
           ENVIRONMENT: ${{ needs.context.outputs.environment }}
           REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |

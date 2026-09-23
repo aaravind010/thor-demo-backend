@@ -1,0 +1,15 @@
+{
+  "connectorType": 401,
+  "entityKind": "MemberAccount",
+  "columnMappings": {
+    "display_name": "MemberName"
+  },
+  "hashFields": [
+    "connector_type",
+    "native_id",
+    "account_kind",
+    "display_name",
+    "is_deleted",
+    "edge_refs"
+  ]
+}

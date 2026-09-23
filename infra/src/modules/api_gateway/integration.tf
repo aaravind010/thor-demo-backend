@@ -1,4 +1,4 @@
-# Demo GET/POST routes, not a catch-all ANY — other methods get no route. One integration, four routes.
+# Catch-all proxy — forwards every path/method through the VPC Link to the NLB, which forwards to thor.
 
 resource "aws_apigatewayv2_integration" "proxy" {
   api_id = aws_apigatewayv2_api.thor-apigw-api.id
@@ -10,9 +10,7 @@ resource "aws_apigatewayv2_integration" "proxy" {
   integration_uri        = var.nlb_listener_arn
   payload_format_version = "1.0"
 
-  # Plain HTTP end to end (var.tls_server_name == "") unless the NLB actually presents a real
-  # cert — must agree with the NLB's own TLS state (modules/ecs/nlb.tf's nlb_tls_enabled), not
-  # decided independently here.
+  # Must agree with the NLB's own TLS state — plain HTTP unless a real cert is configured there too.
   dynamic "tls_config" {
     for_each = var.tls_server_name != "" ? [1] : []
     content {
@@ -21,36 +19,18 @@ resource "aws_apigatewayv2_integration" "proxy" {
   }
 }
 
-resource "aws_apigatewayv2_route" "proxy_root_get" {
+resource "aws_apigatewayv2_route" "proxy_root" {
   api_id    = aws_apigatewayv2_api.thor-apigw-api.id
-  route_key = "GET /"
+  route_key = "ANY /"
   target    = "integrations/${aws_apigatewayv2_integration.proxy.id}"
 
   authorization_type = "CUSTOM"
   authorizer_id      = aws_apigatewayv2_authorizer.thor-api-key.id
 }
 
-resource "aws_apigatewayv2_route" "proxy_root_post" {
+resource "aws_apigatewayv2_route" "proxy" {
   api_id    = aws_apigatewayv2_api.thor-apigw-api.id
-  route_key = "POST /"
-  target    = "integrations/${aws_apigatewayv2_integration.proxy.id}"
-
-  authorization_type = "CUSTOM"
-  authorizer_id      = aws_apigatewayv2_authorizer.thor-api-key.id
-}
-
-resource "aws_apigatewayv2_route" "proxy_get" {
-  api_id    = aws_apigatewayv2_api.thor-apigw-api.id
-  route_key = "GET /{proxy+}"
-  target    = "integrations/${aws_apigatewayv2_integration.proxy.id}"
-
-  authorization_type = "CUSTOM"
-  authorizer_id      = aws_apigatewayv2_authorizer.thor-api-key.id
-}
-
-resource "aws_apigatewayv2_route" "proxy_post" {
-  api_id    = aws_apigatewayv2_api.thor-apigw-api.id
-  route_key = "POST /{proxy+}"
+  route_key = "ANY /{proxy+}"
   target    = "integrations/${aws_apigatewayv2_integration.proxy.id}"
 
   authorization_type = "CUSTOM"

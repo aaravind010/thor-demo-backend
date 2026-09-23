@@ -28,9 +28,7 @@ output "ecr_repository_urls" {
   value       = module.ecs.ecr_repository_urls
 }
 
-# Guarded because these index the "thor-api" map key, which only exists once enable_compute is true. Output
-# names kept as thor_* (stable external interface referring to "the main/public service") even though the
-# underlying service key is thor-api.
+# Guarded because these index the "thor-api" map key, which only exists once enable_compute is true.
 output "thor_target_group_arn" {
   value = var.enable_compute ? module.ecs.target_group_arns["thor-api"] : null
 }
@@ -44,7 +42,7 @@ output "thor_nlb_dns_name" {
 }
 
 output "api_gateway_invoke_url" {
-  description = "Default execute-api invoke URL — no custom domain yet. Always locked behind the Lambda API-key authorizer."
+  description = "Default execute-api invoke URL — no custom domain yet. Always locked behind the Lambda API-key authorizer"
   value       = var.enable_compute ? module.api_gateway[0].invoke_url : null
 }
 
@@ -72,7 +70,7 @@ output "route53_zone_ids" {
 }
 
 output "route53_name_servers" {
-  description = "Map of zone name -> its 4 name servers, for zones this created. Hand the relevant entry to whoever owns that zone's parent domain to add as an NS delegation record."
+  description = "Map of zone name -> its 4 name servers, for zones this created. Hand the relevant entry to whoever owns that zone's parent domain (e.g. SPHERE IT for dev.sphereboard.ai) to add as an NS delegation record."
   value       = var.enable_route53 ? module.route53[0].name_servers : null
 }
 

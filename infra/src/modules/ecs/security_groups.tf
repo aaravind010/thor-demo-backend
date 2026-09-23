@@ -1,15 +1,12 @@
-# Ingress lives in separate ingress_rule resources below, not inline — inline would create a dependency cycle across this for_each's own siblings.
+# Ingress lives in separate aws_vpc_security_group_ingress_rule resources below, not inline, since an inline block indexing into sibling instances of this same for_each resource creates a real Terraform dependency cycle.
 resource "aws_security_group" "service" {
   for_each = local.active_services
 
-  name = "${local.name_prefix[each.key]}-service-sg"
-  # description is ForceNew on aws_security_group and other resources reference this SG's id — changing this text
-  # forces a destroy+recreate that can deadlock against those references (see security_groups.tf history). Left
-  # matching what's already live in AWS; update only alongside a deliberate, planned replacement of this SG.
-  description = each.value.expose_via_nlb ? "ECS service ingress from within the VPC (NLB target, NLB has no SG), egress open (no NAT/IGW route today, so this only reaches the VPC + endpoints in practice)" : "ECS service ingress restricted to public-facing peer services only, egress open (no NAT/IGW route today, so this only reaches the VPC + endpoints in practice)"
+  name        = "${local.name_prefix[each.key]}-service-sg"
+  description = each.value.expose_via_nlb ? "ECS service ingress from NLB SG, egress open (VPC-only until NAT/IGW exists)" : "ECS service ingress restricted to public-facing peers, egress open (VPC-only until NAT/IGW exists)"
   vpc_id      = var.vpc_id
 
-  # 0.0.0.0/0, not var.vpc_cidr — no NAT/IGW route yet, so this only widens the boundary, not actual reachability.
+  # cidr_blocks is 0.0.0.0/0, not var.vpc_cidr — no NAT/IGW route exists for private subnets today, so this only widens the boundary (not actual reachability) until a NAT Gateway is added, at which point it grants full internet egress immediately with no separate decision.
   egress {
     description = "All traffic"
     from_port   = 0
@@ -28,12 +25,12 @@ resource "aws_security_group" "service" {
   }
 }
 
-# Public-facing services: ingress from the NLB's own security group only — not the whole VPC CIDR.
-resource "aws_vpc_security_group_ingress_rule" "public_from_vpc" {
+# Public-facing services (thor-api): ingress restricted to the NLB's own security group, not the whole VPC CIDR.
+resource "aws_vpc_security_group_ingress_rule" "public_from_nlb" {
   for_each = local.public_services
 
   security_group_id            = aws_security_group.service[each.key].id
-  description                  = "From the NLB, to the app"
+  description                  = "From the NLB"
   from_port                    = each.value.container_port
   to_port                      = each.value.container_port
   ip_protocol                  = "tcp"
@@ -47,7 +44,45 @@ resource "aws_vpc_security_group_ingress_rule" "public_from_vpc" {
   }
 }
 
-# Internal services: ingress from each public peer's own SG, merged across every non-public × public pair.
+# NLB ingress: reached via VPC Link from API Gateway, so this allows the VPC Link's ENIs (anywhere in the VPC) rather than the internet.
+resource "aws_vpc_security_group_ingress_rule" "nlb_from_vpc" {
+  for_each = local.public_services
+
+  security_group_id = aws_security_group.nlb[each.key].id
+  description       = "From within the VPC"
+  from_port         = each.value.nlb_listener_port
+  to_port           = each.value.nlb_listener_port
+  ip_protocol       = "tcp"
+  cidr_ipv4         = var.vpc_cidr
+
+  tags = var.tags
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
+}
+
+# Blue/green test listener — same scoping as the production listener above.
+resource "aws_vpc_security_group_ingress_rule" "nlb_test_from_vpc" {
+  for_each = local.public_services
+
+  security_group_id = aws_security_group.nlb[each.key].id
+  description       = "Blue/green test listener, from within the VPC"
+  from_port         = each.value.nlb_test_listener_port
+  to_port           = each.value.nlb_test_listener_port
+  ip_protocol       = "tcp"
+  cidr_ipv4         = var.vpc_cidr
+
+  tags = var.tags
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
+}
+
+# Internal-only services: ingress restricted to each public-facing peer's own security group, built as one map merged across every non-public service × public peer so it still holds if more than one service is ever expose_via_nlb = true.
 resource "aws_vpc_security_group_ingress_rule" "internal_from_public_peers" {
   for_each = merge([
     for svc_key, svc in local.active_services : svc.expose_via_nlb ? {} : {

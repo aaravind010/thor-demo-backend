@@ -42,6 +42,11 @@ output "service_security_group_ids" {
   value = { for k, v in aws_security_group.service : k => v.id }
 }
 
+output "nlb_security_group_ids" {
+  description = "Map of service name -> NLB security group ID, only populated for publicly-exposed services — lets the API Gateway VPC Link scope its egress to just the NLB"
+  value       = { for k, v in aws_security_group.nlb : k => v.id }
+}
+
 output "task_execution_role_arns" {
   value = { for k, v in aws_iam_role.execution : k => v.arn }
 }

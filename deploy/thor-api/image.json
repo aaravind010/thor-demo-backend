@@ -1,0 +1,18 @@
+{
+  "service": "thor-api",
+  "dev": {
+    "digest": "sphereco.jfrog.io/thor-docker-local/thor-api@sha256:cce62b21177cd09f5f01bb283ffae0eeab9c242d046af5fb161f57167e08895a",
+    "commitId": "ecba765e58dd3ebd1837c9b14d1f7d252d61d72a",
+    "deployedAt": "2026-09-23T05:13:26Z"
+  },
+  "qa": {
+    "digest": "",
+    "commitId": "",
+    "deployedAt": ""
+  },
+  "prod": {
+    "digest": "",
+    "commitId": "",
+    "deployedAt": ""
+  }
+}

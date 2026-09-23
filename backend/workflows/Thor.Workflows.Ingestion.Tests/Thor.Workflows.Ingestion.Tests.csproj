@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Thor.Workflows.Ingestion.Tests</RootNamespace>
+    <AssemblyName>Thor.Workflows.Ingestion.Tests</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Abstractions\Thor.Workflows.Abstractions\Thor.Workflows.Abstractions.csproj" />
+    <ProjectReference Include="..\Thor.Workflows.Ingestion\Thor.Workflows.Ingestion.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <PackageReference Include="Testcontainers.PostgreSql" Version="4.1.0" />
+    <!-- Pins Testcontainers' transitive SSH.NET dependency past CVE-2026-48798 (GHSA-q939-rpr3-3284). -->
+    <PackageReference Include="SSH.NET" Version="2026.0.0" />
+  </ItemGroup>
+
+</Project>

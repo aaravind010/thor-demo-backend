@@ -92,26 +92,6 @@ resource "aws_iam_role_policy_attachment" "ingestion_execution_policy_attachment
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# ECS's execution role (not the task role) must hold this for the secrets block below to work —
-# an AWS requirement. Unlike thor-api/task-api (modules/ecs/iam.tf), this task never calls
-# rds-data:ExecuteStatement, so there's no matching task-role grant needed.
-data "aws_iam_policy_document" "ingestion_execution_secrets" {
-  count = local.ingestion_active ? 1 : 0
-
-  statement {
-    actions   = ["secretsmanager:GetSecretValue"]
-    resources = [var.aurora_secret_arn]
-  }
-}
-
-resource "aws_iam_role_policy" "ingestion_execution_secrets" {
-  count = local.ingestion_active ? 1 : 0
-
-  name   = "${local.name_prefix}-execution-secrets"
-  role   = aws_iam_role.ingestion_execution_role[0].id
-  policy = data.aws_iam_policy_document.ingestion_execution_secrets[0].json
-}
-
 resource "aws_iam_role" "ingestion_task_role" {
   count = local.ingestion_active ? 1 : 0
 
@@ -127,12 +107,20 @@ resource "aws_iam_role" "ingestion_task_role" {
 }
 
 # Container's own runtime permissions — add statements here as needed, not a new policy resource.
+# Also the base of the per-step Lambda roles (lambda_steps.tf, via source_policy_documents), so the
+# two compute targets can't drift apart in what the step code is allowed to do.
 data "aws_iam_policy_document" "ingestion_task_permissions_document" {
   count = local.ingestion_active ? 1 : 0
 
   statement {
     actions   = ["s3:GetObject", "s3:ListBucket"]
     resources = [aws_s3_bucket.s3_ingestion[0].arn, "${aws_s3_bucket.s3_ingestion[0].arn}/*"]
+  }
+
+  # Master-DB routing lookup plus the tenant DB the step actually writes, both through the proxy.
+  statement {
+    actions   = ["rds-db:connect"]
+    resources = local.rds_db_connect_resources
   }
 
   # Broad read on every thor-<environment>-* secret (AD/CyberArk/Windows connector credentials) —
@@ -230,22 +218,13 @@ resource "aws_ecs_task_definition" "ecs_ingestion_task_definition" {
       image     = local.resolved_ingestion_image
       essential = true
 
-      environment = [
-        { name = "THOR_STEP", value = each.key },
-        { name = "DB_HOST", value = var.db_host },
-        { name = "DB_NAME", value = var.db_name },
-        { name = "DB_PORT", value = "5432" },
-        { name = "NEPTUNE_ENDPOINT", value = var.neptune_endpoint },
-        { name = "NEPTUNE_PORT", value = "8182" },
-      ]
-
-      # DB_HOST/DB_NAME/DB_PORT above are plain config, not secrets. Credentials come from Secrets
-      # Manager via the execution role (ingestion_execution_secrets) — same JSON-key-suffix idiom
-      # infra/src/main.tf's services_with_shared_secrets local already uses for thor-api/task-api.
-      secrets = [
-        { name = "DB_USERNAME", valueFrom = "${var.aurora_secret_arn}:username::" },
-        { name = "DB_PASSWORD", valueFrom = "${var.aurora_secret_arn}:password::" },
-      ]
+      # No secrets block: local.workflow_environment is plain config, and the DB legs authenticate
+      # with an RDS IAM token the task mints itself under the task role's rds-db:connect grant
+      # (ingestion_task_permissions_document above), so there are no credentials to inject.
+      environment = concat(
+        [{ name = "THOR_STEP", value = each.key }],
+        [for k, v in local.workflow_environment : { name = k, value = v }],
+      )
 
       logConfiguration = {
         logDriver = "awslogs"
@@ -262,7 +241,6 @@ resource "aws_ecs_task_definition" "ecs_ingestion_task_definition" {
 
   depends_on = [
     aws_iam_role_policy_attachment.ingestion_execution_policy_attachment,
-    aws_iam_role_policy.ingestion_execution_secrets,
     aws_iam_role_policy.ingestion_task_permissions,
     aws_iam_role_policy.ingestion_graph_load_task_permissions,
   ]

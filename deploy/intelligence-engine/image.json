@@ -1,0 +1,18 @@
+{
+  "service": "intelligence-engine",
+  "dev": {
+    "digest": "sphereco.jfrog.io/thor-docker-local/intelligence-engine@sha256:11ae151ab11eb9296f8f3f5662518dea08dd1f84545deb33f66bb7d995c6d53d",
+    "commitId": "a6b08700170ca8b480aa8d563254d83296492011",
+    "deployedAt": "2026-09-22T05:16:56Z"
+  },
+  "qa": {
+    "digest": "",
+    "commitId": "",
+    "deployedAt": ""
+  },
+  "prod": {
+    "digest": "",
+    "commitId": "",
+    "deployedAt": ""
+  }
+}

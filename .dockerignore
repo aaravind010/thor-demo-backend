@@ -1,0 +1,28 @@
+# Every service image builds with the repo root as its context
+# (docker build -f backend/services/<Service>/Dockerfile .), so this is the one ignore
+# list shared by all three. Patterns without a leading **/ match at the root only.
+
+.git/
+.github/
+.githooks/
+docs/
+infra/
+scripts/
+placeholder-image/
+
+# .NET build output
+**/bin/
+**/obj/
+**/*.user
+
+# Python build output and caches
+**/.venv/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/.ruff_cache/
+**/tests/
+
+# Local config: never bake it into an image.
+**/.env
+**/.env.*

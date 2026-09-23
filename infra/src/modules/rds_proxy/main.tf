@@ -81,20 +81,28 @@ resource "aws_iam_role" "rds_proxy_role" {
   }
 }
 
-# The proxy's own permissions — add more statements here as it needs more, not a new aws_iam_role_policy per permission.
+# End-to-end IAM (ADR §6.2): the proxy authenticates to Aurora as the connecting IAM DB user,
+# so its role needs rds-db:connect on every DB user reachable through it. The wildcard covers
+# the per-tenant tenant_*_rw/_ro roles and the runtime service roles without per-user edits.
+data "aws_region" "current" {}
+data "aws_caller_identity" "current" {}
+
 data "aws_iam_policy_document" "rds_proxy_permissions" {
   statement {
-    actions   = ["secretsmanager:GetSecretValue"]
-    resources = [var.aurora_secret_arn]
+    actions   = ["rds-db:connect"]
+    resources = ["arn:aws:rds-db:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:dbuser:${var.aurora_cluster_resource_id}/*"]
   }
 }
 
 resource "aws_iam_role_policy" "rds_proxy_permissions" {
-  name   = "rds-proxy-permissions"
+  name   = "${local.name_prefix}-permissions"
   role   = aws_iam_role.rds_proxy_role.id
   policy = data.aws_iam_policy_document.rds_proxy_permissions.json
 }
 
+# default_auth_scheme = IAM_AUTH is end-to-end IAM: both client->proxy and proxy->DB legs use
+# IAM tokens, so there is no Secrets Manager secret and no per-secret ceiling. Requires a
+# terraform-provider-aws release that supports the argument (validated in CI on plan).
 resource "aws_db_proxy" "rds_proxy" {
   name                   = local.name_prefix
   engine_family          = "POSTGRESQL"
@@ -102,12 +110,7 @@ resource "aws_db_proxy" "rds_proxy" {
   vpc_subnet_ids         = var.private_subnet_ids
   vpc_security_group_ids = [aws_security_group.rds_proxy_security_group.id]
   require_tls            = true
-
-  auth {
-    auth_scheme = "SECRETS"
-    secret_arn  = var.aurora_secret_arn
-    iam_auth    = "DISABLED"
-  }
+  default_auth_scheme    = "IAM_AUTH"
 
   tags = var.tags
 

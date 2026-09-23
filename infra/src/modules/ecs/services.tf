@@ -1,16 +1,13 @@
 locals {
   name_prefix = { for k, v in var.services : k => "thor-${var.environment}-${k}" }
 
-  # Falls back to that service's own ECR repo at "latest" when container_image is blank.
+  # Falls back to that service's own ECR repo at the "latest" tag when container_image is left blank.
   resolved_image = {
     for k, v in local.active_services : k =>
     v.container_image != "" ? v.container_image : "${aws_ecr_repository.thor-ecr-repo[k].repository_url}:latest"
   }
 
-  # NLB-fronted services (thor-api) must match the NLB's own mode — plain TCP/HTTP passthrough
-  # unless a real cert makes the NLB re-encrypt. Internal, Service-Connect-only services
-  # (task-api, intelligence-engine) always terminate TLS — their Dockerfiles always bake a
-  # self-signed cert and always listen on the TLS port, independent of the NLB's config.
+  # thor-api's TLS follows the NLB's own state; internal services are always TLS.
   container_tls_enabled = {
     for k, v in local.active_services : k =>
     v.expose_via_nlb ? local.nlb_tls_enabled : true
@@ -57,10 +54,7 @@ resource "aws_ecs_task_definition" "thor-svc-taskdef" {
 
       environment = concat(
         [for k, v in each.value.environment_variables : { name = k, value = v }],
-        # Fixed path/password baked into the image by the Dockerfile's openssl step — not a
-        # deployment-time secret, so it's injected here rather than via terragrunt.hcl. PFX for
-        # the .NET/Kestrel services (thor-api, task-api); intelligence-engine's uvicorn can't
-        # load PKCS12, so it gets the PEM cert/key pair instead.
+        # TLS cert path/password baked into the image by the Dockerfile's openssl step.
         local.container_tls_enabled[each.key] ? (
           each.key == "intelligence-engine" ? [
             { name = "TLS_CERT_PATH", value = "/app/certs/server.crt" },
@@ -76,14 +70,20 @@ resource "aws_ecs_task_definition" "thor-svc-taskdef" {
         for k, v in each.value.secrets : { name = k, valueFrom = v }
       ]
 
-      # Lets ECS detect a hung-but-running container on task-api/intelligence-engine, which have no ALB health check; assumes the image has curl on PATH.
-      # -k (skip cert validation) only matters for the TLS branch, where the cert is self-signed.
+      # Lets ECS detect a hung-but-running container on task-api/intelligence-engine, which have no ALB health check.
+      # intelligence-engine is pure gRPC (h2-only) and won't answer a plain HTTP(S) GET, so it's probed via the
+      # standard grpc.health.v1.Health service instead (assumes the image has curl on PATH for the other services;
+      # -k skips validation of the self-signed cert).
       healthCheck = {
-        command = local.container_tls_enabled[each.key] ? [
-          "CMD-SHELL", "curl -k -f https://localhost:${each.value.container_port}${each.value.health_check_path} || exit 1"
-          ] : [
-          "CMD-SHELL", "curl -f http://localhost:${each.value.container_port}${each.value.health_check_path} || exit 1"
-        ]
+        command = each.key == "intelligence-engine" ? [
+          "CMD-SHELL", "python -m thor_intelligence_engine.healthcheck || exit 1"
+          ] : (
+          local.container_tls_enabled[each.key] ? [
+            "CMD-SHELL", "curl -k -f https://localhost:${each.value.container_port}${each.value.health_check_path} || exit 1"
+            ] : [
+            "CMD-SHELL", "curl -f http://localhost:${each.value.container_port}${each.value.health_check_path} || exit 1"
+          ]
+        )
         interval    = 30
         timeout     = 5
         retries     = 3
@@ -121,7 +121,7 @@ resource "aws_ecs_service" "thor-svc" {
   deployment_minimum_healthy_percent = each.value.min_healthy_percent
   deployment_maximum_percent         = each.value.max_percent
 
-  # Rolls back to the last known-good revision if new tasks fail health checks.
+  # Automatically rolls back to the last known-good revision if new tasks fail health checks.
   deployment_circuit_breaker {
     enable   = true
     rollback = true
@@ -145,7 +145,6 @@ resource "aws_ecs_service" "thor-svc" {
         content {
           alternate_target_group_arn = aws_lb_target_group.thor-nlb-tg-green[each.key].arn
           production_listener_rule   = aws_lb_listener.thor-nlb-listener[each.key].arn
-          test_listener_rule         = aws_lb_listener.thor-nlb-test-listener[each.key].arn
           role_arn                   = aws_iam_role.blue_green[each.key].arn
         }
       }
@@ -156,7 +155,7 @@ resource "aws_ecs_service" "thor-svc" {
     type = "ECS"
   }
 
-  # Native ECS blue/green, no CodeDeploy — a task-set swap, no ALB needed.
+  # Native ECS blue/green, no CodeDeploy — works for task-api/intelligence-engine too via a task-set swap, no ALB required.
   deployment_configuration {
     strategy             = each.value.deployment_strategy
     bake_time_in_minutes = each.value.deployment_strategy == "BLUE_GREEN" ? each.value.bake_time_in_minutes : null
@@ -177,16 +176,14 @@ resource "aws_ecs_service" "thor-svc" {
     }
   }
 
-  # CI/CD owns task_definition/desired_count; tags/tags_all can't reconcile with Custodian (see main.tf) — ignore all three.
+  # CI/CD updates task_definition/desired_count — Terraform must ignore both.
+  # load_balancer temporarily NOT ignored: needed for one apply so a deployment_strategy change (e.g. ROLLING -> BLUE_GREEN) can actually push its required advanced_configuration through. Re-add load_balancer here once this apply succeeds, since blue/green's live primary-target-group swap needs it ignored again afterward.
   lifecycle {
-    ignore_changes = [task_definition, desired_count, tags, tags_all]
+    ignore_changes = [task_definition, desired_count]
   }
 
-  # Depends on every listener instance (both production and test); zero for services with none — no conditional needed.
-  depends_on = [
-    aws_lb_listener.thor-nlb-listener,
-    aws_lb_listener.thor-nlb-test-listener,
-  ]
+  # Depends on all instances of aws_lb_listener.thor-nlb-listener, which is zero for services with no listener — no conditional needed.
+  depends_on = [aws_lb_listener.thor-nlb-listener]
 
   tags = var.tags
 }

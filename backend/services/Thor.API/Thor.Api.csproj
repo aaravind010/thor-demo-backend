@@ -1,0 +1,75 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Thor.Api</RootNamespace>
+    <AssemblyName>Thor.Api</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- test/ holds the separate Thor.Api.Test project; exclude it from this project's own glob. -->
+    <Compile Remove="test\**" />
+    <Content Remove="test\**" />
+    <None Remove="test\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AWSSDK.SecretsManager" Version="4.0.100.7" />
+    <PackageReference Include="Asp.Versioning.Mvc" Version="10.2.1" />
+    <PackageReference Include="Asp.Versioning.Mvc.ApiExplorer" Version="10.2.1" />
+    <PackageReference Include="Asp.Versioning.OpenApi" Version="10.2.1" />
+    <PackageReference Include="Google.Protobuf" Version="3.36.1" />
+    <PackageReference Include="Grpc.Net.Client" Version="2.83.0" />
+    <PackageReference Include="Grpc.Net.ClientFactory" Version="2.83.0" />
+    <PackageReference Include="Grpc.Tools" Version="2.84.0">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <ProjectReference Include="..\..\shared\Thor.DataLayer\Thor.DataLayer.csproj" />
+    <ProjectReference Include="..\..\shared\Thor.Auth\Thor.Auth.csproj" />
+    <ProjectReference Include="..\..\shared\Thor.DataConnectionManager\Thor.DataConnectionManager.csproj" />
+    <ProjectReference Include="..\..\shared\Thor.Core\Thor.Core.csproj" />
+  </ItemGroup>
+
+  <!-- test/ holds its own project (Thor.Api.Test); exclude it from this project's default
+       globs so its files aren't also compiled into Thor.Api itself. -->
+  <ItemGroup>
+    <Compile Remove="test\**" />
+    <Content Remove="test\**" />
+    <EmbeddedResource Remove="test\**" />
+    <None Remove="test\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Shared contract with the Python Intelligence Engine service (backend/services/Thor.IntelligenceEngine).
+         GrpcServices="Both" (not just "Client") so Thor.Api.Test can host an in-process fake server
+         implementing the generated service base class, without a second, colliding codegen pass. -->
+    <Protobuf Include="..\..\..\proto\thor\intelligence_engine\v1\intelligence_engine.proto" GrpcServices="Both" ProtoRoot="..\..\..\proto" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="DotNetEnv" Version="3.2.0" />
+    <PackageReference Include="AWSSDK.SecretsManager" Version="4.0.4.4" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.11" />
+    <PackageReference Include="Microsoft.Extensions.ApiDescription.Server" Version="10.0.11">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Scalar.AspNetCore" Version="2.16.18" />
+    <PackageReference Include="Yarp.ReverseProxy" Version="2.3.0" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OpenApiDocsOutputDirectory>$(MSBuildProjectDirectory)\..\..\..\docs\apidocs</OpenApiDocsOutputDirectory>
+  </PropertyGroup>
+
+  <!-- AddOpenApi() registers a single document named "v1", so the build-time generator
+       (Microsoft.Extensions.ApiDescription.Server) always writes "$(AssemblyName).json";
+       rename it into the tracked docs/apidocs snapshot on every build. -->
+  <Target Name="CopyOpenApiDocumentToDocs" AfterTargets="GenerateOpenApiDocuments">
+    <Copy SourceFiles="$(OpenApiDocumentsDirectory)\$(AssemblyName).json" DestinationFiles="$(OpenApiDocsOutputDirectory)\thorapi_openapi_v1.json" />
+  </Target>
+
+</Project>

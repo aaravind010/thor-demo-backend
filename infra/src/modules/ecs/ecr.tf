@@ -1,4 +1,4 @@
-# Unconditional — a repo must exist before enable_compute can turn on.
+# One repo per service, per environment; unconditional, unlike everything else here, since a repo must exist before enable_compute can be turned on.
 resource "aws_ecr_repository" "thor-ecr-repo" {
   for_each = var.services
 

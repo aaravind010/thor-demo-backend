@@ -1,7 +1,0 @@
-{
-  "service": "task-api",
-  "environment": "prod",
-  "digest": "",
-  "commitId": "",
-  "deployedAt": ""
-}

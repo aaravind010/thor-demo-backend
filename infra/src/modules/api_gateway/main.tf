@@ -9,18 +9,18 @@ terraform {
   }
 }
 
-# VPC Link ENIs — egress only, nothing ever connects in.
+# VPC Link ENIs — egress only, nothing ever connects in. Scoped to just the NLB, not 0.0.0.0/0.
 resource "aws_security_group" "vpc_link" {
   name        = "${var.service_name}-${var.environment}-vpclink-sg"
   description = "API Gateway VPC Link ENIs, egress-only"
   vpc_id      = var.vpc_id
 
   egress {
-    description = "All traffic"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    description     = "To the NLB"
+    from_port       = var.nlb_listener_port
+    to_port         = var.nlb_listener_port
+    protocol        = "tcp"
+    security_groups = [var.nlb_security_group_id]
   }
 
   tags = merge(var.tags, {
