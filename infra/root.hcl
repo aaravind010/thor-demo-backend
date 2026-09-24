@@ -1,46 +1,47 @@
 locals {
   environment = basename(get_original_terragrunt_dir())
 
+  # aws_region is where this stack's regional resources actually live. state_region is where that
+  # account's Terraform state bucket already exists, which is not the same thing and must not be
+  # derived from aws_region — see the remote_state block below.
   account_map = {
     dev = {
-      account_name = "dev" # Account A, shared with qa
-      account_id   = get_aws_account_id()
-      aws_region   = get_env("${upper(local.environment)}_AWS_REGION")
+      account_name = "dev" # Account A, shared with qa (sandbox)
+      account_id   = "853973692277"
+      aws_region   = "us-west-2"
+      state_region = "us-east-1"
     }
     qa = {
-      account_name = "qa" # Account A, shared with dev
-      account_id   = get_aws_account_id()
-      aws_region   = get_env("${upper(local.environment)}_AWS_REGION")
+      account_name = "qa" # Account A, shared with dev (sandbox)
+      account_id   = "853973692277"
+      aws_region   = "us-west-2"
+      state_region = "us-east-1"
     }
     prod = {
       account_name = "prod" # Account B, isolated from dev/qa
-      account_id   = get_aws_account_id()
-      aws_region   = get_env("${upper(local.environment)}_AWS_REGION")
+      account_id   = ""
+      aws_region   = "us-west-2"
+      state_region = "us-east-1"
     }
   }
 
   account = local.account_map[local.environment]
-
-  jfrog_hostname = get_env("JFROG_HOSTNAME")
-  repo_name      = get_env("JFROG_STATE_BACKEND_REPOSITORY")
 }
 
 # Backend config via generate
-generate "backend" {
-  path      = "backend.tf"
-  if_exists = "overwrite_terragrunt"
-  contents  = <<EOF
-terraform {
-  backend "remote" {
-    hostname     = "${local.jfrog_hostname}"
-    organization = "${local.repo_name}"
-
-    workspaces {
-      name = "thor-${local.environment}-${local.account.aws_region}"
-    }
+remote_state {
+  backend = "s3"
+  generate = {
+    path      = "backend.tf"
+    if_exists = "overwrite_terragrunt"
   }
-}
-EOF
+  config = {
+    bucket       = "thor-terraform-state-${local.account.account_id}"
+    key          = "thor-${local.environment}/terraform.tfstate"
+    region       = local.account.state_region
+    use_lockfile = true
+    encrypt      = true
+  }
 }
 
 generate "provider" {

@@ -1,0 +1,167 @@
+{
+  "Comment": "Tenant schema migration, expand phase: inspect live schemas (ECS) -> wait while CI plans and a reviewer approves (task token in S3, released by GitHub) -> per-tenant apply (Distributed Map of ECS tasks) -> record the applied desired-state hash. Input: { runId, tenant: 'all'|<tenant_id>, taskDefinitionArn, desiredSha256, gitSha }.",
+  "StartAt": "Inspect",
+  "States": {
+    "Inspect": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::ecs:runTask.sync",
+      "Parameters": {
+        "Cluster": "${ClusterArn}",
+        "TaskDefinition.$": "$.taskDefinitionArn",
+        "LaunchType": "FARGATE",
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "Subnets": ${Subnets},
+            "SecurityGroups": ["${SecurityGroupId}"],
+            "AssignPublicIp": "DISABLED"
+          }
+        },
+        "Overrides": {
+          "ContainerOverrides": [
+            {
+              "Name": "${ContainerName}",
+              "Environment": [
+                { "Name": "THOR_MODE", "Value": "inspect" },
+                { "Name": "THOR_INPUT", "Value.$": "States.JsonToString($)" }
+              ]
+            }
+          ]
+        }
+      },
+      "ResultPath": null,
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "MigrationFailed" }],
+      "Next": "WaitForPlanAndApproval"
+    },
+
+    "WaitForPlanAndApproval": {
+      "Type": "Task",
+      "Comment": "tenant-migrations.yml reads the snapshots, writes plans/manifest/plan-result.json, then calls SendTaskSuccess (no changes, or a reviewer approved on <env>-db-migration) or SendTaskFailure (blocking changes).",
+      "Resource": "arn:aws:states:::aws-sdk:s3:putObject.waitForTaskToken",
+      "Parameters": {
+        "Bucket": "${Bucket}",
+        "Key.$": "States.Format('runs/{}/approval-token.json', $.runId)",
+        "Body": {
+          "runId.$": "$.runId",
+          "taskToken.$": "$$.Task.Token"
+        }
+      },
+      "TimeoutSeconds": ${ApprovalTimeoutSeconds},
+      "ResultPath": null,
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "MigrationFailed" }],
+      "Next": "ReadPlanResult"
+    },
+
+    "ReadPlanResult": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:s3:getObject",
+      "Parameters": {
+        "Bucket": "${Bucket}",
+        "Key.$": "States.Format('runs/{}/plan-result.json', $.runId)"
+      },
+      "ResultSelector": { "result.$": "States.StringToJson($.Body)" },
+      "ResultPath": "$.plan",
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "MigrationFailed" }],
+      "Next": "HasChanges"
+    },
+
+    "HasChanges": {
+      "Type": "Choice",
+      "Choices": [
+        { "Variable": "$.plan.result.changedTenants", "NumericGreaterThan": 0, "Next": "Apply" }
+      ],
+      "Default": "IsFleetRun"
+    },
+
+    "Apply": {
+      "Type": "Map",
+      "ItemReader": {
+        "Resource": "arn:aws:states:::s3:getObject",
+        "ReaderConfig": { "InputType": "JSON" },
+        "Parameters": {
+          "Bucket": "${Bucket}",
+          "Key.$": "States.Format('runs/{}/manifest.json', $.runId)"
+        }
+      },
+      "ItemSelector": {
+        "runId.$": "$.runId",
+        "taskDefinitionArn.$": "$.taskDefinitionArn",
+        "tenantId.$": "$$.Map.Item.Value.tenantId",
+        "planSha256.$": "$$.Map.Item.Value.planSha256",
+        "liveSha256.$": "$$.Map.Item.Value.liveSha256"
+      },
+      "MaxConcurrency": ${ApplyMaxConcurrency},
+      "ToleratedFailurePercentage": 0,
+      "ItemProcessor": {
+        "ProcessorConfig": { "Mode": "DISTRIBUTED", "ExecutionType": "STANDARD" },
+        "StartAt": "ApplyTenant",
+        "States": {
+          "ApplyTenant": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::ecs:runTask.sync",
+            "Parameters": {
+              "Cluster": "${ClusterArn}",
+              "TaskDefinition.$": "$.taskDefinitionArn",
+              "LaunchType": "FARGATE",
+              "NetworkConfiguration": {
+                "AwsvpcConfiguration": {
+                  "Subnets": ${Subnets},
+                  "SecurityGroups": ["${SecurityGroupId}"],
+                  "AssignPublicIp": "DISABLED"
+                }
+              },
+              "Overrides": {
+                "ContainerOverrides": [
+                  {
+                    "Name": "${ContainerName}",
+                    "Environment": [
+                      { "Name": "THOR_MODE", "Value": "apply" },
+                      { "Name": "THOR_INPUT", "Value.$": "States.JsonToString($)" }
+                    ]
+                  }
+                ]
+              }
+            },
+            "ResultPath": null,
+            "End": true
+          }
+        }
+      },
+      "ResultPath": null,
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "MigrationFailed" }],
+      "Next": "IsFleetRun"
+    },
+
+    "IsFleetRun": {
+      "Type": "Choice",
+      "Comment": "Only a run over every tenant marks the desired state as applied — that marker is what lets later runs skip.",
+      "Choices": [{ "Variable": "$.tenant", "StringEquals": "all", "Next": "MarkApplied" }],
+      "Default": "MigrationSucceeded"
+    },
+
+    "MarkApplied": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:s3:putObject",
+      "Parameters": {
+        "Bucket": "${Bucket}",
+        "Key": "state/applied.json",
+        "Body": {
+          "desiredSha256.$": "$.desiredSha256",
+          "runId.$": "$.runId",
+          "gitSha.$": "$.gitSha",
+          "appliedAt.$": "$$.State.EnteredTime"
+        }
+      },
+      "ResultPath": null,
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "MigrationFailed" }],
+      "Next": "MigrationSucceeded"
+    },
+
+    "MigrationSucceeded": { "Type": "Succeed" },
+
+    "MigrationFailed": {
+      "Type": "Fail",
+      "Error": "TenantMigrationFailed",
+      "Cause": "See the failed state in the execution history and runs/<runId>/ in the migration bucket."
+    }
+  }
+}

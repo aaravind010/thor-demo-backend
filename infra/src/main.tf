@@ -409,6 +409,10 @@ module "rds_proxy" {
     # this one SG and all read the Master DB through the proxy.
     var.enable_ingestion ? {
       ingestion = module.ingestion.task_security_group_id
+    } : {},
+    # The tenant-migration runner reads routing and diffs/applies every tenant DB via the proxy.
+    var.enable_tenant_migration ? {
+      tenant-migration = module.tenant_migration[0].task_security_group_id
     } : {}
   )
 
@@ -508,6 +512,36 @@ module "tenant_provisioning" {
   hosted_zone_id = module.route53[0].zone_ids[var.tenant_provisioning_base_domain]
   base_domain    = var.tenant_provisioning_base_domain
   dns_target     = var.tenant_provisioning_dns_target
+
+  tags = var.tags
+}
+
+# Expand-phase tenant schema migrations (migrations/tenant, run by .github/workflows/tenant-migrations.yml).
+module "tenant_migration" {
+  count = var.enable_tenant_migration ? 1 : 0
+
+  source = "./modules/tenant_migration"
+
+  environment                  = var.environment
+  account_id                   = var.account_id
+  aws_region                   = var.aws_region
+  vpc_id                       = local.vpc_id
+  private_subnet_ids           = local.private_subnet_ids
+  iam_permissions_boundary_arn = local.iam_permissions_boundary_arn
+
+  # The OIDC role every workflow (and infra.yml's Terraform) runs as — deploy-<environment>,
+  # created outside Terraform (docs/Infra_pipeline/infra_pipeline_setup_guide.md, Step 3). Only
+  # it, the runner and the state machine can reach the migration bucket.
+  github_oidc_role_arn = "arn:aws:iam::${var.account_id}:role/deploy-${var.environment}"
+
+  # The runner reads tenant routing from the Master DB and reaches every tenant DB through the
+  # proxy (tenant_routing.cluster_endpoint), so rds-db:connect is proxy-scoped.
+  db_host               = module.rds_proxy.endpoint
+  db_name               = module.aurora.database_name
+  rds_proxy_resource_id = module.rds_proxy.proxy_resource_id
+  master_db_app_user    = var.master_db_app_user
+
+  state_machine_definition_path = var.tenant_migration_asl_path
 
   tags = var.tags
 }

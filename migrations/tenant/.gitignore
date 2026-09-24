@@ -1,0 +1,4 @@
+# Generated in CI by tenant-migrations.yml (dotnet ef dbcontext script → atlas schema inspect) —
+# org policy: no committed tool output.
+ef.sql
+desired.hcl

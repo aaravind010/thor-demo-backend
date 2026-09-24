@@ -299,6 +299,48 @@ Repeat this for each of `dev`, `qa`, `prod` — three separate roles,
 7. Name the role (`deploy-dev`/`deploy-qa`/`deploy-prod`) and copy its
    **ARN** — needed in Step 4.
 
+8. **Tenant migrations** (`.github/workflows/tenant-migrations.yml`,
+   `migrations/tenant/README.md`). `scripts/create-deploy-role.sh` applies
+   all of this; if you manage the roles in the console, add it by hand.
+
+   Trust: add one subject per role:
+   `repo:<GITHUB_ORG>@<GITHUB_ORG_ID>/<REPO>@<REPO_ID>:environment:<environment>-db-migration`
+   (the `approve` job). The `ref:refs/heads/<branch>` subject above already
+   covers the other jobs, which run without an Environment.
+
+   Permissions: add these statements to the inline policy:
+   ```json
+   {
+     "Sid": "TenantMigrationBucket",
+     "Effect": "Allow",
+     "Action": ["s3:*"],
+     "Resource": ["arn:aws:s3:::thor-<environment>-tenant-migration-*", "arn:aws:s3:::thor-<environment>-tenant-migration-*/*"]
+   },
+   {
+     "Sid": "TenantMigrationExecutions",
+     "Effect": "Allow",
+     "Action": ["states:StartExecution", "states:DescribeExecution", "states:StopExecution"],
+     "Resource": [
+       "arn:aws:states:*:*:stateMachine:thor-<environment>-tenant-migration",
+       "arn:aws:states:*:*:execution:thor-<environment>-tenant-migration:*"
+     ]
+   },
+   { "Sid": "TenantMigrationApproval", "Effect": "Allow", "Action": ["states:SendTaskSuccess", "states:SendTaskFailure"], "Resource": "*" }
+   ```
+   `SendTaskSuccess`/`SendTaskFailure` can't be resource-scoped (they act on
+   a task token, not an ARN). Terraform's `module.tenant_migration` additionally creates, under
+   this role: the ECR repo `thor-<environment>-tenant-migration-runner`, the
+   ECS cluster and task-definition family `thor-<environment>-tenant-migration`,
+   a state machine and CloudWatch alarm of the same name, and log groups
+   `/ecs/<environment>/thor-<environment>-tenant-migration` and
+   `/aws/states/thor-<environment>-tenant-migration` — make sure the ECR,
+   ECS, Step Functions, CloudWatch and Logs statements cover those names.
+
+   The migration bucket's policy denies every principal except this role,
+   the runner task role and the state machine role — so the role's ARN
+   must stay `arn:aws:iam::<ACCOUNT_ID>:role/deploy-<environment>`
+   (`infra/src/main.tf` derives it from that name).
+
 ## Step 4: Set the repo-level variables
 
 **Repo → Settings → Secrets and variables → Actions → Variables** (repo

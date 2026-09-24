@@ -1,0 +1,368 @@
+name: Tenant Migrations
+
+# Expand-phase tenant schema migrations (migrations/tenant/README.md). Generates the desired tenant
+# schema from the EF model; the thor-<env>-tenant-migration state machine snapshots the live tenant
+# schemas (ECS); this workflow diffs and classifies them (Atlas needs a dev database, which only CI
+# has), waits for a reviewer on <env>-db-migration, then lets the state machine apply. deploy.yml
+# calls this before any service deploy, so a failed or rejected migration blocks the deploy.
+#
+# pull_request runs only the generate job (desired state + classifier tests) — no AWS access.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        type: choice
+        options: [dev, qa, prod]
+        required: true
+      tenant:
+        description: "'all' or one tenant_id"
+        type: string
+        default: all
+        required: true
+  workflow_call:
+    inputs:
+      environment:
+        description: "dev, qa, or prod"
+        type: string
+        required: true
+      tenant:
+        description: "'all' or one tenant_id"
+        type: string
+        default: all
+        required: false
+  pull_request:
+    branches: [dev, qa, main]
+    paths:
+      - backend/shared/Thor.DataLayer/Data/Tenant/**
+      - backend/shared/Thor.DataLayer/Models/Tenants/**
+      - backend/shared/Thor.DataLayer/Thor.DataLayer.csproj
+      - migrations/tenant/**
+      - .config/dotnet-tools.json
+      - .github/workflows/tenant-migrations.yml
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  # One migration per environment at a time; never cancel one that may be mid-apply.
+  group: tenant-migration-${{ inputs.environment || github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Keep in step with migrations/tenant/Dockerfile's ATLAS_VERSION.
+  ATLAS_VERSION: v1.3.0
+  ENVIRONMENT: ${{ inputs.environment }}
+  TENANT: ${{ inputs.tenant || 'all' }}
+  RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+  AWS_ROLE_ARN: ${{ inputs.environment == 'dev' && vars.DEV_AWS_ROLE_ARN || inputs.environment == 'qa' && vars.QA_AWS_ROLE_ARN || inputs.environment == 'prod' && vars.PROD_AWS_ROLE_ARN }}
+  # No fallback: a missing var must fail loudly, not silently target the wrong region.
+  AWS_REGION: ${{ inputs.environment == 'dev' && vars.DEV_AWS_REGION || inputs.environment == 'qa' && vars.QA_AWS_REGION || inputs.environment == 'prod' && vars.PROD_AWS_REGION }}
+  # Atlas's dev database (the postgres service container below) — CI only, ECS never diffs.
+  DEV_URL: postgres://postgres:atlas@localhost:5432/postgres?sslmode=disable
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: atlas
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    outputs:
+      skip: ${{ steps.applied.outputs.skip }}
+      desired_sha: ${{ steps.desired.outputs.sha }}
+      task_definition_arn: ${{ steps.taskdef.outputs.arn }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - uses: ariga/setup-atlas@v0
+        with:
+          version: ${{ env.ATLAS_VERSION }}
+
+      - name: Classifier tests
+        run: sh migrations/tenant/classify_test.sh
+
+      - name: Generate desired state from the EF model
+        id: desired
+        working-directory: migrations/tenant
+        run: |
+          set -euo pipefail
+          dotnet tool restore
+          dotnet ef dbcontext script --project ../../backend/shared/Thor.DataLayer \
+            --startup-project ../../backend/shared/Thor.DataLayer --context TenantDbContext --output ef.sql
+          sed -i '1s/^\xEF\xBB\xBF//' ef.sql # EF writes a UTF-8 BOM
+          atlas schema inspect --env ef --url env://src --var dev_url="$DEV_URL" \
+            --format '{{ hcl . }}' > desired.hcl
+          echo "sha=$(sha256sum desired.hcl | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desired-state
+          path: migrations/tenant/desired.hcl
+
+      - name: ECR login
+        if: github.event_name != 'pull_request'
+        id: ecr
+        uses: ./.github/actions/ecr-login
+        with:
+          role_arn: ${{ env.AWS_ROLE_ARN }}
+          region: ${{ env.AWS_REGION }}
+
+      - name: Resolve names
+        if: github.event_name != 'pull_request'
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "BUCKET=thor-${ENVIRONMENT}-tenant-migration-${ACCOUNT_ID}" >> "$GITHUB_ENV"
+          echo "FAMILY=thor-${ENVIRONMENT}-tenant-migration" >> "$GITHUB_ENV"
+
+      # Only a fleet-wide run can be skipped: state/applied.json is written only when every tenant
+      # was migrated to this exact desired state.
+      - name: Check applied state
+        if: github.event_name != 'pull_request'
+        id: applied
+        env:
+          DESIRED_SHA: ${{ steps.desired.outputs.sha }}
+        run: |
+          applied=$(aws s3 cp "s3://${BUCKET}/state/applied.json" - 2>/dev/null | jq -r '.desiredSha256' || true)
+          if [ "$TENANT" = "all" ] && [ "$applied" = "$DESIRED_SHA" ]; then
+            echo "Desired state ${DESIRED_SHA} is already applied to every tenant — nothing to do." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Tag = hash of exactly what goes into the image, so an unchanged runner is never rebuilt
+      # (the repo is IMMUTABLE).
+      - name: Build and push runner image
+        if: github.event_name != 'pull_request' && steps.applied.outputs.skip != 'true'
+        working-directory: migrations/tenant
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          TAG=$(cat Dockerfile entrypoint.sh lib.sh inspect.sh apply.sh | sha256sum | cut -c1-16)
+          IMAGE="${REGISTRY}/${FAMILY}-runner:${TAG}"
+          if ! aws ecr describe-images --repository-name "${FAMILY}-runner" --image-ids imageTag="$TAG" >/dev/null 2>&1; then
+            docker build --build-arg ATLAS_VERSION="${ATLAS_VERSION#v}" -t "$IMAGE" .
+            docker push "$IMAGE"
+          fi
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      # Terraform owns roles/env/sizing; CI only swaps the image into a new revision.
+      - name: Register task definition revision
+        if: github.event_name != 'pull_request' && steps.applied.outputs.skip != 'true'
+        id: taskdef
+        run: |
+          set -euo pipefail
+          aws ecs describe-task-definition --task-definition "$FAMILY" --query taskDefinition \
+            | jq --arg img "$IMAGE" '.containerDefinitions[0].image = $img
+                | {family, taskRoleArn, executionRoleArn, networkMode, containerDefinitions,
+                   requiresCompatibilities, cpu, memory}' > taskdef.json
+          ARN=$(aws ecs register-task-definition --cli-input-json file://taskdef.json \
+            --query taskDefinition.taskDefinitionArn --output text)
+          echo "arn=$ARN" >> "$GITHUB_OUTPUT"
+
+  plan:
+    needs: generate
+    if: github.event_name != 'pull_request' && needs.generate.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Atlas's dev database for the diffs.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: atlas
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    outputs:
+      needs_approval: ${{ steps.decide.outputs.needs_approval }}
+      execution_arn: ${{ steps.start.outputs.execution_arn }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ariga/setup-atlas@v0
+        with:
+          version: ${{ env.ATLAS_VERSION }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: desired-state
+          path: migrations/tenant
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Start execution
+        id: start
+        env:
+          TASK_DEFINITION_ARN: ${{ needs.generate.outputs.task_definition_arn }}
+          DESIRED_SHA: ${{ needs.generate.outputs.desired_sha }}
+        run: |
+          set -euo pipefail
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "BUCKET=thor-${ENVIRONMENT}-tenant-migration-${ACCOUNT_ID}" >> "$GITHUB_ENV"
+
+          # jq --arg escapes every value, so the tenant input can't break out of the JSON.
+          INPUT=$(jq -n --arg runId "$RUN_ID" --arg tenant "$TENANT" --arg td "$TASK_DEFINITION_ARN" \
+            --arg sha "$DESIRED_SHA" --arg git "$GITHUB_SHA" \
+            '{runId: $runId, tenant: $tenant, taskDefinitionArn: $td, desiredSha256: $sha, gitSha: $git}')
+          ARN=$(aws stepfunctions start-execution \
+            --state-machine-arn "arn:aws:states:${AWS_REGION}:${ACCOUNT_ID}:stateMachine:thor-${ENVIRONMENT}-tenant-migration" \
+            --name "migrate-${RUN_ID}" --input "$INPUT" --query executionArn --output text)
+          echo "execution_arn=$ARN" >> "$GITHUB_OUTPUT"
+          echo "EXECUTION_ARN=$ARN" >> "$GITHUB_ENV"
+
+      # Inspect is done when the state machine parks on WaitForPlanAndApproval (its token object
+      # appears); anything else ending the execution first is a failure.
+      - name: Wait for live-schema snapshots
+        run: |
+          set -uo pipefail
+          while :; do
+            if aws s3api head-object --bucket "$BUCKET" --key "runs/${RUN_ID}/approval-token.json" >/dev/null 2>&1; then
+              exit 0
+            fi
+            STATUS=$(aws stepfunctions describe-execution --execution-arn "$EXECUTION_ARN" --query status --output text)
+            if [ "$STATUS" != "RUNNING" ]; then
+              echo "Execution ${STATUS} before planning:"
+              aws stepfunctions describe-execution --execution-arn "$EXECUTION_ARN" --query '[error, cause]' --output text
+              exit 1
+            fi
+            sleep 15
+          done
+
+      - name: Plan
+        run: |
+          set -euo pipefail
+          mkdir -p run
+          aws s3 cp --only-show-errors --recursive "s3://${BUCKET}/runs/${RUN_ID}/" run/ \
+            --exclude "*" --include "tenants.json" --include "live/*"
+          sh migrations/tenant/plan.sh migrations/tenant/desired.hcl run
+          aws s3 cp --only-show-errors --recursive run/ "s3://${BUCKET}/runs/${RUN_ID}/" \
+            --exclude "*" --include "plans/*" --include "summary.json" --include "manifest.json" --include "plan-result.json"
+
+      - name: Plan summary
+        if: always() && hashFiles('run/summary.json') != ''
+        run: |
+          jq -r --arg env "$ENVIRONMENT" '
+            "## Tenant migration plan — \($env)", "",
+            "| Tenant | Expand (applied after approval) | Pending contract (not applied) | Blocking |",
+            "|---|---|---|---|",
+            (.[] | "| `\(.tenantId)` | \(.expand | length) | \(.deferred | length) | \(.blocking | length) |"),
+            (.[] | select((.expand | length) + (.deferred | length) + (.blocking | length) > 0)
+              | "", "### `\(.tenantId)`",
+                (.blocking[] | "- ⛔ **\(.rule)** `\(.table)`: `\(.sql)`"),
+                (.expand[]   | "- ✅ `\(.table)`: `\(.sql)`"),
+                (.deferred[] | "- 🕓 `\(.table)`: `\(.sql)`"))
+          ' run/summary.json >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always() && hashFiles('run/summary.json') != ''
+        with:
+          name: tenant-migration-plan
+          path: |
+            run/plans/
+            run/summary.json
+
+      # Blocking changes fail the execution here; no changes release it straight away (it still
+      # records the applied state); real changes wait for the approve job.
+      - name: Decide
+        id: decide
+        run: |
+          set -euo pipefail
+          TOKEN=$(aws s3 cp "s3://${BUCKET}/runs/${RUN_ID}/approval-token.json" - | jq -er .taskToken)
+          BLOCKED=$(jq -r .blockedTenants run/plan-result.json)
+          CHANGED=$(jq -r .changedTenants run/plan-result.json)
+          if [ "$BLOCKED" -gt 0 ]; then
+            aws stepfunctions send-task-failure --task-token "$TOKEN" --error BlockingChanges \
+              --cause "${BLOCKED} tenant(s) have blocking changes — see the plan summary."
+            echo "Plan has blocking changes — nothing applied." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          elif [ "$CHANGED" -eq 0 ]; then
+            aws stepfunctions send-task-success --task-token "$TOKEN" --task-output '{}'
+            echo "needs_approval=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "needs_approval=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  approve:
+    needs: plan
+    if: needs.plan.outputs.needs_approval == 'true'
+    runs-on: ubuntu-latest
+    # Required reviewers on <env>-db-migration are the manual approval gate.
+    environment: ${{ inputs.environment }}-db-migration
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Release WaitForPlanAndApproval
+        run: |
+          set -euo pipefail
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          TOKEN=$(aws s3 cp "s3://thor-${ENVIRONMENT}-tenant-migration-${ACCOUNT_ID}/runs/${RUN_ID}/approval-token.json" - | jq -er .taskToken)
+          aws stepfunctions send-task-success --task-token "$TOKEN" --task-output '{}'
+
+  apply-wait:
+    needs: [plan, approve]
+    if: always() && needs.plan.result == 'success' && (needs.approve.result == 'success' || needs.plan.outputs.needs_approval == 'false')
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Wait for apply
+        env:
+          EXECUTION_ARN: ${{ needs.plan.outputs.execution_arn }}
+        run: |
+          set -uo pipefail
+          while :; do
+            STATUS=$(aws stepfunctions describe-execution --execution-arn "$EXECUTION_ARN" --query status --output text)
+            [ "$STATUS" = "RUNNING" ] || break
+            sleep 20
+          done
+          echo "Execution ${STATUS}" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$STATUS" != "SUCCEEDED" ]; then
+            aws stepfunctions describe-execution --execution-arn "$EXECUTION_ARN" --query '[error, cause]' --output text
+            exit 1
+          fi
+
+  # Planning failed, or the approval was rejected / failed: stop the execution instead of leaving
+  # it parked until the WaitForPlanAndApproval timeout. (Already-finished executions are fine.)
+  cancel:
+    needs: [plan, approve]
+    if: >-
+      always() && needs.plan.outputs.execution_arn != '' &&
+      (needs.plan.result != 'success' || (needs.plan.outputs.needs_approval == 'true' && needs.approve.result != 'success'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Stop execution
+        env:
+          EXECUTION_ARN: ${{ needs.plan.outputs.execution_arn }}
+        run: |
+          aws stepfunctions stop-execution --execution-arn "$EXECUTION_ARN" \
+            --error MigrationNotApplied --cause "Planning failed, or the ${ENVIRONMENT}-db-migration approval was rejected." || true
+          echo "Migration not applied — execution stopped." >> "$GITHUB_STEP_SUMMARY"
+          exit 1

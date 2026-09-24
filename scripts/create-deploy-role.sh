@@ -45,15 +45,26 @@ fi
 
 REPO_SLUG="${GITHUB_ORG}@${GITHUB_ORG_ID}/${GITHUB_REPO}@${GITHUB_REPO_ID}"
 
+# Branch each environment deploys from (prod ships from main).
+case "${ENVIRONMENT}" in
+  prod) BRANCH="main" ;;
+  *) BRANCH="${ENVIRONMENT}" ;;
+esac
+
 # qa trusts both the candidate stage and the promote stage; dev/prod each trust just their one environment.
+# Every environment also trusts, for tenant-migrations.yml:
+#   environment:<env>-db-migration  its approve job (the required-reviewer gate)
+#   ref:refs/heads/<branch>         its generate/plan/apply-wait/cancel jobs, which run without an
+#                                   Environment (called from deploy.yml on push, or dispatched)
 case "${ENVIRONMENT}" in
   qa)
-    SUB_JSON='["repo:'"${REPO_SLUG}"':environment:qa-candidate","repo:'"${REPO_SLUG}"':environment:qa"]'
+    SUB_JSON='["repo:'"${REPO_SLUG}"':environment:qa-candidate","repo:'"${REPO_SLUG}"':environment:qa"'
     ;;
   *)
-    SUB_JSON='["repo:'"${REPO_SLUG}"':environment:'"${ENVIRONMENT}"'"]'
+    SUB_JSON='["repo:'"${REPO_SLUG}"':environment:'"${ENVIRONMENT}"'"'
     ;;
 esac
+SUB_JSON="${SUB_JSON}"',"repo:'"${REPO_SLUG}"':environment:'"${ENVIRONMENT}"'-db-migration","repo:'"${REPO_SLUG}"':ref:refs/heads/'"${BRANCH}"'"]'
 
 TRUST_POLICY="$(jq -n \
   --arg oidc_arn "${OIDC_PROVIDER_ARN}" \
@@ -100,6 +111,30 @@ PERMISSIONS_POLICY="$(jq -n \
         Effect: "Allow",
         Action: ["iam:PassRole"],
         Resource: ("arn:aws:iam::*:role/thor-" + $env + "-*")
+      },
+      {
+        Sid: "TenantMigrationBucket",
+        Effect: "Allow",
+        Action: ["s3:*"],
+        Resource: [
+          ("arn:aws:s3:::thor-" + $env + "-tenant-migration-*"),
+          ("arn:aws:s3:::thor-" + $env + "-tenant-migration-*/*")
+        ]
+      },
+      {
+        Sid: "TenantMigrationExecutions",
+        Effect: "Allow",
+        Action: ["states:StartExecution", "states:DescribeExecution", "states:StopExecution"],
+        Resource: [
+          ("arn:aws:states:*:*:stateMachine:thor-" + $env + "-tenant-migration"),
+          ("arn:aws:states:*:*:execution:thor-" + $env + "-tenant-migration:*")
+        ]
+      },
+      {
+        Sid: "TenantMigrationApproval",
+        Effect: "Allow",
+        Action: ["states:SendTaskSuccess", "states:SendTaskFailure"],
+        Resource: "*"
       }
     ]
   }'
