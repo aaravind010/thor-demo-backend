@@ -36,6 +36,11 @@ resource "aws_secretsmanager_secret" "thor-connector-jwt" {
   recovery_window_in_days = var.recovery_window_in_days
 
   tags = var.tags
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }
 
 resource "aws_secretsmanager_secret" "thor-api-key-pepper" {
@@ -45,4 +50,9 @@ resource "aws_secretsmanager_secret" "thor-api-key-pepper" {
   recovery_window_in_days = var.recovery_window_in_days
 
   tags = var.tags
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }

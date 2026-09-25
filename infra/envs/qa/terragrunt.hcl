@@ -175,5 +175,9 @@ inputs = {
   # --- db bootstrap (in-VPC Lambda that mints the platform DB roles as master) ---
   db_bootstrap_source_dir = "${get_repo_root()}/backend/functions/Thor.DbBootstrap/publish"
 
+  # --- tenant schema migrations (expand phase; deploy.yml gates service deploys on it) ---
+  enable_tenant_migration   = true
+  tenant_migration_asl_path = "${get_repo_root()}/migrations/tenant/statemachine/tenant-migration.asl.json"
+
   tags = {}
 }

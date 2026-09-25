@@ -299,6 +299,42 @@ Repeat this for each of `dev`, `qa`, `prod` — three separate roles,
 7. Name the role (`deploy-dev`/`deploy-qa`/`deploy-prod`) and copy its
    **ARN** — needed in Step 4.
 
+8. **Tenant migrations** (`.github/workflows/tenant-migrations.yml`,
+   `migrations/tenant/README.md`). `scripts/create-deploy-role.sh` applies
+   all of this; if you manage the roles in the console, add it by hand.
+
+   Trust: nothing new. The `approve` job runs under the existing
+   `<environment>` Environment and the other jobs under the
+   `ref:refs/heads/<branch>` subject, both already trusted above.
+
+   Permissions: add these statements to the inline policy:
+   ```json
+   {
+     "Sid": "TenantMigrationBucket",
+     "Effect": "Allow",
+     "Action": ["s3:*"],
+     "Resource": ["arn:aws:s3:::thor-<environment>-tenant-migration-*", "arn:aws:s3:::thor-<environment>-tenant-migration-*/*"]
+   },
+   {
+     "Sid": "TenantMigrationExecutions",
+     "Effect": "Allow",
+     "Action": ["states:StartExecution", "states:DescribeExecution", "states:StopExecution"],
+     "Resource": [
+       "arn:aws:states:*:*:stateMachine:thor-<environment>-tenant-migration",
+       "arn:aws:states:*:*:execution:thor-<environment>-tenant-migration:*"
+     ]
+   },
+   { "Sid": "TenantMigrationApproval", "Effect": "Allow", "Action": ["states:SendTaskSuccess", "states:SendTaskFailure"], "Resource": "*" }
+   ```
+   `SendTaskSuccess`/`SendTaskFailure` can't be resource-scoped (they act on
+   a task token, not an ARN). Terraform's `module.tenant_migration` additionally creates, under
+   this role: the ECR repo `thor-<environment>-tenant-migration-runner`, the
+   ECS cluster and task-definition family `thor-<environment>-tenant-migration`,
+   a state machine and CloudWatch alarm of the same name, and log groups
+   `/ecs/<environment>/thor-<environment>-tenant-migration` and
+   `/aws/states/thor-<environment>-tenant-migration` — make sure the ECR,
+   ECS, Step Functions, CloudWatch and Logs statements cover those names.
+
 ## Step 4: Set the repo-level variables
 
 **Repo → Settings → Secrets and variables → Actions → Variables** (repo
