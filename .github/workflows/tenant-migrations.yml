@@ -189,7 +189,6 @@ jobs:
         options: >-
           --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
     outputs:
-      needs_approval: ${{ steps.decide.outputs.needs_approval }}
       execution_arn: ${{ steps.start.outputs.execution_arn }}
     steps:
       - uses: actions/checkout@v4
@@ -279,30 +278,22 @@ jobs:
             run/plans/
             run/summary.json
 
-      # Blocking changes fail the execution here; no changes release it straight away (it still
-      # records the applied state); real changes wait for the approve job.
+      # Blocking changes fail the execution here; every other plan — including an empty one —
+      # waits for a reviewer on the approve job before the state machine continues.
       - name: Decide
-        id: decide
         run: |
           set -euo pipefail
           TOKEN=$(aws s3 cp "s3://${BUCKET}/runs/${RUN_ID}/approval-token.json" - | jq -er .taskToken)
           BLOCKED=$(jq -r .blockedTenants run/plan-result.json)
-          CHANGED=$(jq -r .changedTenants run/plan-result.json)
           if [ "$BLOCKED" -gt 0 ]; then
             aws stepfunctions send-task-failure --task-token "$TOKEN" --error BlockingChanges \
               --cause "${BLOCKED} tenant(s) have blocking changes — see the plan summary."
             echo "Plan has blocking changes — nothing applied." | tee -a "$GITHUB_STEP_SUMMARY"
             exit 1
-          elif [ "$CHANGED" -eq 0 ]; then
-            aws stepfunctions send-task-success --task-token "$TOKEN" --task-output '{}'
-            echo "needs_approval=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "needs_approval=true" >> "$GITHUB_OUTPUT"
           fi
 
   approve:
     needs: plan
-    if: needs.plan.outputs.needs_approval == 'true'
     runs-on: ubuntu-latest
     # Required reviewers on the <env> environment are the manual approval gate.
     environment: ${{ inputs.environment }}
@@ -321,7 +312,6 @@ jobs:
 
   apply-wait:
     needs: [plan, approve]
-    if: always() && needs.plan.result == 'success' && (needs.approve.result == 'success' || needs.plan.outputs.needs_approval == 'false')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -352,7 +342,7 @@ jobs:
     needs: [plan, approve]
     if: >-
       always() && needs.plan.outputs.execution_arn != '' &&
-      (needs.plan.result != 'success' || (needs.plan.outputs.needs_approval == 'true' && needs.approve.result != 'success'))
+      (needs.plan.result != 'success' || needs.approve.result != 'success')
     runs-on: ubuntu-latest
     steps:
       - uses: aws-actions/configure-aws-credentials@v4

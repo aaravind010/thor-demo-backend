@@ -35,7 +35,7 @@
 
     "WaitForPlanAndApproval": {
       "Type": "Task",
-      "Comment": "tenant-migrations.yml reads the snapshots, writes plans/manifest/plan-result.json, then calls SendTaskSuccess (no changes, or a reviewer approved on the <env> environment) or SendTaskFailure (blocking changes).",
+      "Comment": "tenant-migrations.yml reads the snapshots, writes plans/manifest/plan-result.json, then calls SendTaskSuccess once a reviewer approves on the <env> environment (every run, even an empty plan) or SendTaskFailure (blocking changes).",
       "Resource": "arn:aws:states:::aws-sdk:s3:putObject.waitForTaskToken",
       "Parameters": {
         "Bucket": "${Bucket}",

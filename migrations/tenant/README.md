@@ -36,9 +36,8 @@ tenant-migrations.yml                      thor-<env>-tenant-migration (Step Fun
             plan.sh: diff + classify  ◀──  WaitForPlanAndApproval (token in runs/<id>/approval-token.json)
             → plans/, summary, manifest
             blocking → send-task-failure ▶ fail
-            no changes → send-task-success ▶ MarkApplied
-  approve   <env> environment reviewers
-            send-task-success ─────────▶  Apply (Distributed Map, ECS MODE=apply per tenant)
+  approve   <env> environment reviewers (every run, even an empty plan)
+            send-task-success ─────────▶  HasChanges → Apply (Distributed Map, ECS MODE=apply per tenant)
   apply-wait                               MarkApplied (state/applied.json, fleet runs only)
 ```
 
