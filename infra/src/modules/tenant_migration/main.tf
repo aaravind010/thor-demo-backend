@@ -15,7 +15,7 @@ terraform {
 # code, Dockerfile and ASL live in migrations/tenant; this module only provisions the AWS side.
 locals {
   name_prefix    = "thor-${var.environment}-tenant-migration"
-  bucket_name    = "${local.name_prefix}-new-${var.account_id}"
+  bucket_name    = "${local.name_prefix}-${var.account_id}"
   container_name = "${local.name_prefix}-runner"
 
   # The runner connects through the RDS Proxy (tenant_routing.cluster_endpoint), so rds-db:connect

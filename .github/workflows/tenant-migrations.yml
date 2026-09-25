@@ -124,7 +124,7 @@ jobs:
         if: github.event_name != 'pull_request'
         run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          echo "BUCKET=thor-${ENVIRONMENT}-tenant-migration-new-${ACCOUNT_ID}" >> "$GITHUB_ENV"
+          echo "BUCKET=thor-${ENVIRONMENT}-tenant-migration-${ACCOUNT_ID}" >> "$GITHUB_ENV"
           echo "FAMILY=thor-${ENVIRONMENT}-tenant-migration" >> "$GITHUB_ENV"
 
       # Only a fleet-wide run can be skipped: state/applied.json is written only when every tenant
@@ -215,7 +215,7 @@ jobs:
         run: |
           set -euo pipefail
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          echo "BUCKET=thor-${ENVIRONMENT}-tenant-migration-new-${ACCOUNT_ID}" >> "$GITHUB_ENV"
+          echo "BUCKET=thor-${ENVIRONMENT}-tenant-migration-${ACCOUNT_ID}" >> "$GITHUB_ENV"
 
           # jq --arg escapes every value, so the tenant input can't break out of the JSON.
           INPUT=$(jq -n --arg runId "$RUN_ID" --arg tenant "$TENANT" --arg td "$TASK_DEFINITION_ARN" \
@@ -307,7 +307,7 @@ jobs:
         run: |
           set -euo pipefail
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          TOKEN=$(aws s3 cp "s3://thor-${ENVIRONMENT}-tenant-migration-new-${ACCOUNT_ID}/runs/${RUN_ID}/approval-token.json" - | jq -er .taskToken)
+          TOKEN=$(aws s3 cp "s3://thor-${ENVIRONMENT}-tenant-migration-${ACCOUNT_ID}/runs/${RUN_ID}/approval-token.json" - | jq -er .taskToken)
           aws stepfunctions send-task-success --task-token "$TOKEN" --task-output '{}'
 
   apply-wait:

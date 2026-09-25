@@ -99,7 +99,7 @@ Classifier tests locally: `sh migrations/tenant/classify_test.sh`.
 | `infra/src/modules/tenant_migration` | Bucket, ECR, ECS, state machine, IAM |
 | `.github/workflows/tenant-migrations.yml` | Pipeline |
 
-S3 layout (`thor-<env>-tenant-migration-new-<account>`: private, no bucket policy — access comes from
+S3 layout (`thor-<env>-tenant-migration-<account>`: private, no bucket policy — access comes from
 each principal's IAM permissions):
 
 ```
