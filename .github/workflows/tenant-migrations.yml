@@ -98,6 +98,8 @@ jobs:
         run: |
           set -euo pipefail
           dotnet tool restore
+          # dotnet ef doesn't restore the target project's NuGet packages before its design-time build.
+          dotnet restore ../../backend/shared/Thor.DataLayer
           dotnet ef dbcontext script --project ../../backend/shared/Thor.DataLayer \
             --startup-project ../../backend/shared/Thor.DataLayer --context TenantDbContext --output ef.sql
           sed -i '1s/^\xEF\xBB\xBF//' ef.sql # EF writes a UTF-8 BOM
