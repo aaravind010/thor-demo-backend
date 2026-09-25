@@ -31,6 +31,11 @@ resource "aws_s3_bucket" "thor-uploads-bucket" {
   tags = merge(var.tags, {
     Name = local.bucket_name
   })
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }
 
 resource "aws_s3_bucket_public_access_block" "thor-uploads-bucket-pab" {
