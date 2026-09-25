@@ -62,9 +62,6 @@ public sealed class Scan
     [Column("analysis_completed_at")]
     public DateTimeOffset? AnalysisCompletedAt { get; set; }
 
-    [Column("notes")]
-    public string? Notes { get; set; }
-
     public ScanConfig ScanConfig { get; set; } = null!;
 
     private readonly List<ScanTask> _tasks = new();
