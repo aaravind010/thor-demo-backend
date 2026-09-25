@@ -3,7 +3,7 @@ name: Tenant Migrations
 # Expand-phase tenant schema migrations (migrations/tenant/README.md). Generates the desired tenant
 # schema from the EF model; the thor-<env>-tenant-migration state machine snapshots the live tenant
 # schemas (ECS); this workflow diffs and classifies them (Atlas needs a dev database, which only CI
-# has), waits for a reviewer on <env>-db-migration, then lets the state machine apply. deploy.yml
+# has), waits for a reviewer on the <env> environment, then lets the state machine apply. deploy.yml
 # calls this before any service deploy, so a failed or rejected migration blocks the deploy.
 #
 # pull_request runs only the generate job (desired state + classifier tests) — no AWS access.
@@ -304,8 +304,8 @@ jobs:
     needs: plan
     if: needs.plan.outputs.needs_approval == 'true'
     runs-on: ubuntu-latest
-    # Required reviewers on <env>-db-migration are the manual approval gate.
-    environment: ${{ inputs.environment }}-db-migration
+    # Required reviewers on the <env> environment are the manual approval gate.
+    environment: ${{ inputs.environment }}
     steps:
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -365,6 +365,6 @@ jobs:
           EXECUTION_ARN: ${{ needs.plan.outputs.execution_arn }}
         run: |
           aws stepfunctions stop-execution --execution-arn "$EXECUTION_ARN" \
-            --error MigrationNotApplied --cause "Planning failed, or the ${ENVIRONMENT}-db-migration approval was rejected." || true
+            --error MigrationNotApplied --cause "Planning failed, or the ${ENVIRONMENT} approval was rejected." || true
           echo "Migration not applied — execution stopped." >> "$GITHUB_STEP_SUMMARY"
           exit 1

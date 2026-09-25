@@ -303,10 +303,9 @@ Repeat this for each of `dev`, `qa`, `prod` — three separate roles,
    `migrations/tenant/README.md`). `scripts/create-deploy-role.sh` applies
    all of this; if you manage the roles in the console, add it by hand.
 
-   Trust: add one subject per role:
-   `repo:<GITHUB_ORG>@<GITHUB_ORG_ID>/<REPO>@<REPO_ID>:environment:<environment>-db-migration`
-   (the `approve` job). The `ref:refs/heads/<branch>` subject above already
-   covers the other jobs, which run without an Environment.
+   Trust: nothing new. The `approve` job runs under the existing
+   `<environment>` Environment and the other jobs under the
+   `ref:refs/heads/<branch>` subject, both already trusted above.
 
    Permissions: add these statements to the inline policy:
    ```json

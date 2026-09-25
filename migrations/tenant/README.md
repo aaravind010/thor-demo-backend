@@ -37,7 +37,7 @@ tenant-migrations.yml                      thor-<env>-tenant-migration (Step Fun
             → plans/, summary, manifest
             blocking → send-task-failure ▶ fail
             no changes → send-task-success ▶ MarkApplied
-  approve   <env>-db-migration reviewers
+  approve   <env> environment reviewers
             send-task-success ─────────▶  Apply (Distributed Map, ECS MODE=apply per tenant)
   apply-wait                               MarkApplied (state/applied.json, fleet runs only)
 ```

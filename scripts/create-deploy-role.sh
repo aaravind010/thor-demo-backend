@@ -52,10 +52,9 @@ case "${ENVIRONMENT}" in
 esac
 
 # qa trusts both the candidate stage and the promote stage; dev/prod each trust just their one environment.
-# Every environment also trusts, for tenant-migrations.yml:
-#   environment:<env>-db-migration  its approve job (the required-reviewer gate)
-#   ref:refs/heads/<branch>         its generate/plan/apply-wait/cancel jobs, which run without an
-#                                   Environment (called from deploy.yml on push, or dispatched)
+# Every environment also trusts ref:refs/heads/<branch> for tenant-migrations.yml's generate/plan/
+# apply-wait/cancel jobs, which run without an Environment (called from deploy.yml on push, or
+# dispatched). Its approve job runs under environment:<env>, already trusted above.
 case "${ENVIRONMENT}" in
   qa)
     SUB_JSON='["repo:'"${REPO_SLUG}"':environment:qa-candidate","repo:'"${REPO_SLUG}"':environment:qa"'
@@ -64,7 +63,7 @@ case "${ENVIRONMENT}" in
     SUB_JSON='["repo:'"${REPO_SLUG}"':environment:'"${ENVIRONMENT}"'"'
     ;;
 esac
-SUB_JSON="${SUB_JSON}"',"repo:'"${REPO_SLUG}"':environment:'"${ENVIRONMENT}"'-db-migration","repo:'"${REPO_SLUG}"':ref:refs/heads/'"${BRANCH}"'"]'
+SUB_JSON="${SUB_JSON}"',"repo:'"${REPO_SLUG}"':ref:refs/heads/'"${BRANCH}"'"]'
 
 TRUST_POLICY="$(jq -n \
   --arg oidc_arn "${OIDC_PROVIDER_ARN}" \
