@@ -28,11 +28,6 @@ variable "iam_permissions_boundary_arn" {
   description = "ARN of the account's thor-<environment>-role-boundary policy — required on every IAM role this module creates."
 }
 
-variable "github_oidc_role_arn" {
-  type        = string
-  description = "ARN of the GitHub OIDC deploy role (deploy-<environment>, created by scripts/create-deploy-role.sh, not Terraform). One of only three principals the migration bucket policy allows — a wrong value locks CI (and Terraform running as that role) out of the bucket."
-}
-
 variable "db_host" {
   type        = string
   description = "RDS Proxy endpoint — where the runner reads the master DB's tenant routing."

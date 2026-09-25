@@ -100,8 +100,8 @@ Classifier tests locally: `sh migrations/tenant/classify_test.sh`.
 | `infra/src/modules/tenant_migration` | Bucket, ECR, ECS, state machine, IAM |
 | `.github/workflows/tenant-migrations.yml` | Pipeline |
 
-S3 layout (`thor-<env>-tenant-migration-<account>`, accessible only to the GitHub OIDC deploy role,
-the runner task role and the state machine role):
+S3 layout (`thor-<env>-tenant-migration-new-<account>`: private, no bucket policy — access comes from
+each principal's IAM permissions):
 
 ```
 runs/<runId>/tenants.json | live/<tenantId>.hcl | live/<tenantId>.notnull.txt   (runner: inspect)

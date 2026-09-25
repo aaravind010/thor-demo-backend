@@ -336,11 +336,6 @@ Repeat this for each of `dev`, `qa`, `prod` — three separate roles,
    `/aws/states/thor-<environment>-tenant-migration` — make sure the ECR,
    ECS, Step Functions, CloudWatch and Logs statements cover those names.
 
-   The migration bucket's policy denies every principal except this role,
-   the runner task role and the state machine role — so the role's ARN
-   must stay `arn:aws:iam::<ACCOUNT_ID>:role/deploy-<environment>`
-   (`infra/src/main.tf` derives it from that name).
-
 ## Step 4: Set the repo-level variables
 
 **Repo → Settings → Secrets and variables → Actions → Variables** (repo

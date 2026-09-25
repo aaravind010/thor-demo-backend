@@ -529,11 +529,6 @@ module "tenant_migration" {
   private_subnet_ids           = local.private_subnet_ids
   iam_permissions_boundary_arn = local.iam_permissions_boundary_arn
 
-  # The OIDC role every workflow (and infra.yml's Terraform) runs as — deploy-<environment>,
-  # created outside Terraform (docs/Infra_pipeline/infra_pipeline_setup_guide.md, Step 3). Only
-  # it, the runner and the state machine can reach the migration bucket.
-  github_oidc_role_arn = "arn:aws:iam::${var.account_id}:role/deploy-${var.environment}"
-
   # The runner reads tenant routing from the Master DB and reaches every tenant DB through the
   # proxy (tenant_routing.cluster_endpoint), so rds-db:connect is proxy-scoped.
   db_host               = module.rds_proxy.endpoint

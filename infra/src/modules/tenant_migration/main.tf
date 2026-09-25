@@ -15,7 +15,7 @@ terraform {
 # code, Dockerfile and ASL live in migrations/tenant; this module only provisions the AWS side.
 locals {
   name_prefix    = "thor-${var.environment}-tenant-migration"
-  bucket_name    = "${local.name_prefix}-${var.account_id}"
+  bucket_name    = "${local.name_prefix}-new-${var.account_id}"
   container_name = "${local.name_prefix}-runner"
 
   # The runner connects through the RDS Proxy (tenant_routing.cluster_endpoint), so rds-db:connect
@@ -24,9 +24,8 @@ locals {
   rds_db_arn_prefix = "arn:aws:rds-db:${var.aws_region}:${var.account_id}:dbuser:${var.rds_proxy_resource_id}"
 }
 
-# Plans, approval tokens and applied-state markers. Nothing but the three migration principals
-# (GitHub OIDC deploy role, runner task role, state machine role) may touch it — enforced by an
-# explicit Deny in the bucket policy, so even an admin session is refused.
+# Live-schema snapshots, plans, approval tokens and applied-state markers. Private (public access
+# blocked); no bucket policy, so access is whatever each principal's IAM permissions grant.
 resource "aws_s3_bucket" "migration_bucket" {
   bucket = local.bucket_name
 
@@ -96,63 +95,4 @@ resource "aws_s3_bucket_lifecycle_configuration" "migration_bucket_lifecycle" {
       noncurrent_days = var.run_retention_days
     }
   }
-}
-
-data "aws_iam_policy_document" "migration_bucket_policy_document" {
-  statement {
-    sid     = "DenyInsecureTransport"
-    effect  = "Deny"
-    actions = ["s3:*"]
-
-    principals {
-      type        = "*"
-      identifiers = ["*"]
-    }
-
-    resources = [
-      aws_s3_bucket.migration_bucket.arn,
-      "${aws_s3_bucket.migration_bucket.arn}/*",
-    ]
-
-    condition {
-      test     = "Bool"
-      variable = "aws:SecureTransport"
-      values   = ["false"]
-    }
-  }
-
-  # aws:PrincipalArn resolves an assumed-role session to its role ARN. The OIDC role is also the
-  # identity Terraform runs as in CI, which is what keeps this policy manageable after it's applied.
-  statement {
-    sid     = "DenyAllButMigrationPrincipals"
-    effect  = "Deny"
-    actions = ["s3:*"]
-
-    principals {
-      type        = "*"
-      identifiers = ["*"]
-    }
-
-    resources = [
-      aws_s3_bucket.migration_bucket.arn,
-      "${aws_s3_bucket.migration_bucket.arn}/*",
-    ]
-
-    condition {
-      test     = "ArnNotEquals"
-      variable = "aws:PrincipalArn"
-      values = [
-        var.github_oidc_role_arn,
-        aws_iam_role.runner_task_role.arn,
-        aws_iam_role.state_machine_role.arn,
-      ]
-    }
-  }
-}
-
-resource "aws_s3_bucket_policy" "migration_bucket_policy" {
-  bucket = aws_s3_bucket.migration_bucket.id
-  policy = data.aws_iam_policy_document.migration_bucket_policy_document.json
-
-  depends_on = [aws_s3_bucket_public_access_block.migration_bucket_pab]
 }
