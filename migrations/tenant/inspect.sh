@@ -3,9 +3,11 @@
 # Read-only against every database; no dev database needed.
 #
 # THOR_INPUT: {"runId": "...", "tenant": "all" | "<tenant_id>", ...}
-# Writes  runs/<runId>/live/<tenant_id>.hcl          live schema (HCL)
-#         runs/<runId>/live/<tenant_id>.notnull.txt  "table.column" NOT NULL without default
-#         runs/<runId>/tenants.json                  [{tenantId, liveSha256}]
+# Writes  runs/<runId>/live/<tenant_id>.hcl            live schema (HCL)
+#         runs/<runId>/live/<tenant_id>.notnull.txt    "table.column" NOT NULL without default
+#         runs/<runId>/live/<tenant_id>.columns.txt    "table.column" for every column
+#         runs/<runId>/live/<tenant_id>.backfills.tsv  "id<TAB>sha256" per backfill already run
+#         runs/<runId>/tenants.json                    [{tenantId, liveSha256}]
 # shellcheck source=lib.sh
 . /app/lib.sh
 
@@ -29,9 +31,21 @@ while IFS="$TAB" read -r id host db user <&3; do
     SELECT table_name || '.' || column_name FROM information_schema.columns
     WHERE table_schema = 'tenant' AND is_nullable = 'NO' AND column_default IS NULL
       AND is_identity = 'NO' AND is_generated = 'NEVER'" > "$work/$id.notnull.txt"
+  tenant_psql "$host" "$db" "$user" "$token" -At -c "
+    SELECT table_name || '.' || column_name FROM information_schema.columns
+    WHERE table_schema = 'tenant'" > "$work/$id.columns.txt"
+  # Migrate's record table only exists once a backfill has run on this tenant.
+  if grep -qx '__thor_backfills.id' "$work/$id.columns.txt"; then
+    tenant_psql "$host" "$db" "$user" "$token" -At -F "$TAB" -c "
+      SELECT id, sha256 FROM tenant.__thor_backfills ORDER BY id" > "$work/$id.backfills.tsv"
+  else
+    : > "$work/$id.backfills.tsv"
+  fi
 
   s3_put "$work/$id.hcl" "runs/$run_id/live/$id.hcl"
   s3_put "$work/$id.notnull.txt" "runs/$run_id/live/$id.notnull.txt"
+  s3_put "$work/$id.columns.txt" "runs/$run_id/live/$id.columns.txt"
+  s3_put "$work/$id.backfills.tsv" "runs/$run_id/live/$id.backfills.tsv"
   jq -cn --arg id "$id" --arg sha "$(sha256 "$work/$id.hcl")" '{tenantId: $id, liveSha256: $sha}' \
     >> "$work/tenants.ndjson"
 done 3< "$work/tenants.tsv"

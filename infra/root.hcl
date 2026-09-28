@@ -28,7 +28,6 @@ locals {
   account = local.account_map[local.environment]
 }
 
-# Backend config via generate
 remote_state {
   backend = "s3"
   generate = {

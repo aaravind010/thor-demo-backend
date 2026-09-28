@@ -1,5 +1,6 @@
 #!/bin/sh
-# MODE=apply. Applies one tenant's approved expand plan, in a single transaction.
+# MODE=apply. Applies one tenant's approved plan (any phase — plan.sh builds it), in a single
+# transaction.
 #
 # THOR_INPUT (one Apply Map item):
 #   {"runId": "...", "tenantId": "...", "planSha256": "...", "liveSha256": "..."}

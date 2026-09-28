@@ -145,6 +145,7 @@ jobs:
     with:
       environment: ${{ needs.context.outputs.environment }}
       tenant: all
+      phase: expand
     secrets: inherit
 
   deploy-thor-api:
@@ -178,6 +179,24 @@ jobs:
       environment: ${{ needs.context.outputs.environment }}
       mode: ${{ needs.context.outputs.mode }}
       changed_services: ${{ needs.context.outputs.changed_services }}
+    secrets: inherit
+
+  # Migrate-phase backfills run once the services are live: they write both the old and the new
+  # columns by then, so no row written meanwhile is missed. This run also records the deployed model,
+  # which the contract phase's rollback window counts from. always(): a service that didn't change is
+  # skipped, not failed (same as write-manifests). A failed or cancelled deploy skips it — the new
+  # model isn't fully live. Pushes only: a manual deploy or rollback is never the deployed model.
+  tenant-backfills:
+    needs: [context, tenant-migrations, deploy-thor-api, deploy-task-api, deploy-intelligence-engine]
+    if: >-
+      always() && github.event_name == 'push' && needs.context.outputs.mode != 'preview'
+      && needs.tenant-migrations.result == 'success'
+      && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    uses: ./.github/workflows/tenant-migrations.yml
+    with:
+      environment: ${{ needs.context.outputs.environment }}
+      tenant: all
+      phase: migrate
     secrets: inherit
 
   preview-thor-api:

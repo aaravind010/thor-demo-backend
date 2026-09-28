@@ -57,10 +57,11 @@ tenant_psql() { # host db user token, then psql args
 
 # The tenant schema's live state as HCL. Inspection needs no dev database (only diffing does, and
 # that happens in CI), and its output is deterministic, so its hash detects drift between plan and
-# apply. EF's own history table isn't part of the model, so it's left out.
+# apply. Tables that aren't part of the model are left out: EF's own history table and Migrate's
+# backfill record (the contract phase would otherwise drop it).
 atlas_inspect() { # host db user token out
   _url=$(printf 'postgres://%s:%s@%s:%s/%s?sslmode=require' \
     "$3" "$(printf '%s' "$4" | jq -sRr @uri)" "$1" "$THOR_DB_PORT" "$2") # token contains & = %
   atlas schema inspect --url "$_url" --schema tenant --exclude 'tenant.__EFMigrationsHistory' \
-    --format '{{ hcl . }}' > "$5"
+    --exclude 'tenant.__thor_backfills' --format '{{ hcl . }}' > "$5"
 }
