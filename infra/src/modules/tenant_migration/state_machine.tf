@@ -62,7 +62,8 @@ data "aws_iam_policy_document" "state_machine_permissions" {
     resources = ["arn:aws:events:*:*:rule/StepFunctionsGetEventsForECSTaskRule"]
   }
 
-  # WaitForPlanAndApproval (token object), ReadPlanResult, the Apply Map's ItemReader, MarkApplied.
+  # WaitForPlanAndApproval (token object), ReadPlanResult, the Apply Map's ItemReader, the fleet
+  # markers (MarkApplied, Save/WritePendingContract, MarkBackfillsApplied).
   statement {
     actions   = ["s3:GetObject", "s3:PutObject"]
     resources = ["${aws_s3_bucket.migration_bucket.arn}/*"]

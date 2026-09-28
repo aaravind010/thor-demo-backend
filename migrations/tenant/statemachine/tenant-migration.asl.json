@@ -1,5 +1,5 @@
 {
-  "Comment": "Tenant schema migration, expand phase: inspect live schemas (ECS) -> wait while CI plans and a reviewer approves (task token in S3, released by GitHub) -> per-tenant apply (Distributed Map of ECS tasks) -> record the applied desired-state hash. Input: { runId, tenant: 'all'|<tenant_id>, taskDefinitionArn, desiredSha256, gitSha }.",
+  "Comment": "Tenant schema migration, one phase per run (expand | migrate | contract): inspect live schemas (ECS) -> wait while CI plans and a reviewer approves (task token in S3, released by GitHub) -> per-tenant apply (Distributed Map of ECS tasks) -> on fleet runs, record what the phase completed. Input: { runId, tenant: 'all'|<tenant_id>, phase (absent = expand), taskDefinitionArn, desiredSha256, backfillsSha256 (migrate), gitSha }.",
   "StartAt": "Inspect",
   "States": {
     "Inspect": {
@@ -133,9 +133,66 @@
 
     "IsFleetRun": {
       "Type": "Choice",
-      "Comment": "Only a run over every tenant marks the desired state as applied — that marker is what lets later runs skip.",
-      "Choices": [{ "Variable": "$.tenant", "StringEquals": "all", "Next": "MarkApplied" }],
+      "Comment": "Only a run over every tenant speaks for the fleet — its markers are what later runs read.",
+      "Choices": [{ "Variable": "$.tenant", "StringEquals": "all", "Next": "WhichPhase" }],
       "Default": "MigrationSucceeded"
+    },
+
+    "WhichPhase": {
+      "Type": "Choice",
+      "Comment": "No phase means expand (callers from before Part 2). Contract records nothing: the next expand run's pending-contract list no longer has what it dropped.",
+      "Choices": [
+        { "Variable": "$.phase", "IsPresent": false, "Next": "SavePendingContract" },
+        { "Variable": "$.phase", "StringEquals": "migrate", "Next": "MarkBackfillsApplied" },
+        { "Variable": "$.phase", "StringEquals": "contract", "Next": "MigrationSucceeded" }
+      ],
+      "Default": "SavePendingContract"
+    },
+
+    "SavePendingContract": {
+      "Type": "Task",
+      "Comment": "When each pending-contract item first appeared (plan.sh wrote it for this run) — the contract phase's rollback window. A read and a write rather than copyObject: the role's permissions boundary allows only s3:GetObject/PutObject. Saved before applied.json: if this fails, the next run is not skipped and saves it again.",
+      "Resource": "arn:aws:states:::aws-sdk:s3:getObject",
+      "Parameters": {
+        "Bucket": "${Bucket}",
+        "Key.$": "States.Format('runs/{}/pending-contract.json', $.runId)"
+      },
+      "ResultSelector": { "body.$": "$.Body" },
+      "ResultPath": "$.pendingContract",
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "MigrationFailed" }],
+      "Next": "WritePendingContract"
+    },
+
+    "WritePendingContract": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:s3:putObject",
+      "Parameters": {
+        "Bucket": "${Bucket}",
+        "Key": "state/pending-contract.json",
+        "Body.$": "$.pendingContract.body"
+      },
+      "ResultPath": null,
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "MigrationFailed" }],
+      "Next": "MarkApplied"
+    },
+
+    "MarkBackfillsApplied": {
+      "Type": "Task",
+      "Comment": "Every tenant has run every backfill script in this set — lets later runs skip the migrate phase.",
+      "Resource": "arn:aws:states:::aws-sdk:s3:putObject",
+      "Parameters": {
+        "Bucket": "${Bucket}",
+        "Key": "state/backfills-applied.json",
+        "Body": {
+          "backfillsSha256.$": "$.backfillsSha256",
+          "runId.$": "$.runId",
+          "gitSha.$": "$.gitSha",
+          "appliedAt.$": "$$.State.EnteredTime"
+        }
+      },
+      "ResultPath": null,
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "MigrationFailed" }],
+      "Next": "MigrationSucceeded"
     },
 
     "MarkApplied": {
