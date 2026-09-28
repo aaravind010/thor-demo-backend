@@ -62,6 +62,11 @@ resource "aws_security_group" "authorizer" {
   }
 
   tags = merge(var.tags, { Name = "${local.name_prefix}-sg" })
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }
 
 # The authorizer connects through the RDS Proxy, so it needs ingress to the proxy on 5432. Rule
@@ -76,6 +81,11 @@ resource "aws_vpc_security_group_ingress_rule" "authorizer_to_proxy" {
   ip_protocol                  = "tcp"
 
   tags = merge(var.tags, { Name = "${local.name_prefix}-proxy-ingress" })
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
 }
 
 data "aws_iam_policy_document" "thor-lambda-authorizer-assume-policy-document" {
