@@ -1,5 +1,6 @@
 -- DDL guard for the migrate phase: plan.sh puts this at the top of every migrate plan. Two temporary
--- helpers — they live in pg_temp, vanish with the session and never become part of the tenant schema:
+-- helpers — they live in pg_temp and never become part of the tenant schema. OR REPLACE: RDS Proxy
+-- reuses database sessions, so an earlier run's helpers can still be there:
 --   pg_temp.thor_schema_fp()            one md5 over every object in the non-system schemas
 --   pg_temp.thor_assert_schema(before)  raises if the schema no longer matches that md5
 -- The plan takes the md5 before the backfill scripts and asserts after each one. DDL is transactional
@@ -7,7 +8,7 @@
 -- EXECUTE in a DO block — fails the assert and the whole tenant rolls back. Data changes (rows,
 -- sequence values, statistics) are not part of the md5. Migrate's own record table is left out.
 
-CREATE FUNCTION pg_temp.thor_schema_fp() RETURNS text LANGUAGE sql AS $fp$
+CREATE OR REPLACE FUNCTION pg_temp.thor_schema_fp() RETURNS text LANGUAGE sql AS $fp$
   WITH ns AS (
     SELECT oid, nspname, nspacl FROM pg_namespace
     WHERE nspname NOT LIKE 'pg\_%' AND nspname <> 'information_schema'
@@ -53,7 +54,7 @@ CREATE FUNCTION pg_temp.thor_schema_fp() RETURNS text LANGUAGE sql AS $fp$
   ) objects(x)
 $fp$;
 
-CREATE FUNCTION pg_temp.thor_assert_schema(before text) RETURNS void LANGUAGE plpgsql AS $as$
+CREATE OR REPLACE FUNCTION pg_temp.thor_assert_schema(before text) RETURNS void LANGUAGE plpgsql AS $as$
 BEGIN
   IF pg_temp.thor_schema_fp() IS DISTINCT FROM before THEN
     RAISE EXCEPTION 'backfill changed the schema: backfills may only change data';
