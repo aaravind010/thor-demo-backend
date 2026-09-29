@@ -157,7 +157,7 @@
         "Bucket": "${Bucket}",
         "Key.$": "States.Format('runs/{}/pending-contract.json', $.runId)"
       },
-      "ResultSelector": { "body.$": "$.Body" },
+      "ResultSelector": { "body.$": "States.StringToJson($.Body)" },
       "ResultPath": "$.pendingContract",
       "Catch": [{ "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "MigrationFailed" }],
       "Next": "WritePendingContract"
