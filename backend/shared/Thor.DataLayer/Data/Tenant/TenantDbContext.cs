@@ -16,6 +16,8 @@ public class TenantDbContext(DbContextOptions<TenantDbContext> options) : DbCont
 
     public DbSet<ScanManifest> ScanManifests => Set<ScanManifest>();
 
+    public DbSet<MigrationProbe> MigrationProbes => Set<MigrationProbe>();
+
     public DbSet<ScanTask> Tasks => Set<ScanTask>();
 
     public DbSet<WorkflowEntity> Workflows => Set<WorkflowEntity>();
