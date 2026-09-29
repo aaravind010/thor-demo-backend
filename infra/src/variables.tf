@@ -398,6 +398,20 @@ variable "tenant_provisioning_dns_target" {
   description = "DNS target (CNAME value) each tenant subdomain record points at — typically the public API/CloudFront hostname. Required when enable_tenant_provisioning is true."
 }
 
+# --- tenant schema migrations (Step Functions + ECS, module.tenant_migration) ---
+
+variable "enable_tenant_migration" {
+  type        = bool
+  default     = false
+  description = "Whether to create the tenant-migration bucket, runner ECR/ECS and state machine. deploy.yml gates every service deploy on tenant-migrations.yml, which needs these to exist in the target environment."
+}
+
+variable "tenant_migration_asl_path" {
+  type        = string
+  default     = ""
+  description = "Absolute path to migrations/tenant/statemachine/tenant-migration.asl.json. Required when enable_tenant_migration is true."
+}
+
 # --- master db seed (in-VPC Lambda that writes deployment seed data via IAM through the RDS Proxy) ---
 
 variable "master_db_seed_source_dir" {

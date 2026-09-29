@@ -197,5 +197,9 @@ inputs = {
   # TODO: set to the API's public hostname (wildcard custom domain target) before enabling.
   tenant_provisioning_dns_target = "api.dev.sphereboarddev.ai"
 
+  # --- tenant schema migrations (expand phase; deploy.yml gates service deploys on it) ---
+  enable_tenant_migration   = true
+  tenant_migration_asl_path = "${get_repo_root()}/migrations/tenant/statemachine/tenant-migration.asl.json"
+
   tags = {}
 }

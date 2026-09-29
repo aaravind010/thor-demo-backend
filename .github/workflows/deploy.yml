@@ -135,8 +135,21 @@ jobs:
           [ "$INTELLIGENCE_ENGINE" = "true" ] && CHANGED="${CHANGED}intelligence-engine,"
           echo "changed_services=$CHANGED" >> "$GITHUB_OUTPUT"
 
-  deploy-thor-api:
+  # Expand-phase tenant schema migrations land before any service ships code that uses them. A
+  # failed plan, rejected approval or failed apply fails this job, and every deploy below needs it,
+  # so they're skipped. When the desired schema is already applied it finishes in the generate job.
+  tenant-migrations:
     needs: context
+    if: needs.context.outputs.mode != 'preview'
+    uses: ./.github/workflows/tenant-migrations.yml
+    with:
+      environment: ${{ needs.context.outputs.environment }}
+      tenant: all
+      phase: expand
+    secrets: inherit
+
+  deploy-thor-api:
+    needs: [context, tenant-migrations]
     if: needs.context.outputs.mode != 'preview' && needs.context.outputs['thor-api'] == 'true'
     uses: ./.github/workflows/_deploy-core.yml
     with:
@@ -147,7 +160,7 @@ jobs:
     secrets: inherit
 
   deploy-task-api:
-    needs: context
+    needs: [context, tenant-migrations]
     if: needs.context.outputs.mode != 'preview' && needs.context.outputs['task-api'] == 'true'
     uses: ./.github/workflows/_deploy-core.yml
     with:
@@ -158,7 +171,7 @@ jobs:
     secrets: inherit
 
   deploy-intelligence-engine:
-    needs: context
+    needs: [context, tenant-migrations]
     if: needs.context.outputs.mode != 'preview' && needs.context.outputs['intelligence-engine'] == 'true'
     uses: ./.github/workflows/_deploy-core.yml
     with:
@@ -166,6 +179,24 @@ jobs:
       environment: ${{ needs.context.outputs.environment }}
       mode: ${{ needs.context.outputs.mode }}
       changed_services: ${{ needs.context.outputs.changed_services }}
+    secrets: inherit
+
+  # Migrate-phase backfills run once the services are live: they write both the old and the new
+  # columns by then, so no row written meanwhile is missed. This run also records the deployed model,
+  # which the contract phase's rollback window counts from. always(): a service that didn't change is
+  # skipped, not failed (same as write-manifests). A failed or cancelled deploy skips it — the new
+  # model isn't fully live. Pushes only: a manual deploy or rollback is never the deployed model.
+  tenant-backfills:
+    needs: [context, tenant-migrations, deploy-thor-api, deploy-task-api, deploy-intelligence-engine]
+    if: >-
+      always() && github.event_name == 'push' && needs.context.outputs.mode != 'preview'
+      && needs.tenant-migrations.result == 'success'
+      && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    uses: ./.github/workflows/tenant-migrations.yml
+    with:
+      environment: ${{ needs.context.outputs.environment }}
+      tenant: all
+      phase: migrate
     secrets: inherit
 
   preview-thor-api:
@@ -192,7 +223,18 @@ jobs:
       service: intelligence-engine
     secrets: inherit
 
+  # Same gate for manual deploys/rollbacks. A rollback is safe on an expanded schema, and this is a
+  # no-op unless the dispatched ref carries a model change that hasn't been applied yet.
+  tenant-migrations-manual:
+    if: github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/tenant-migrations.yml
+    with:
+      environment: ${{ inputs.environment }}
+      tenant: all
+    secrets: inherit
+
   deploy-manual:
+    needs: tenant-migrations-manual
     if: github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/_deploy-core.yml
     with:
