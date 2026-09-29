@@ -66,20 +66,24 @@ not_expanded() { # classified.json
           else empty end]' "$1"
 }
 
+# Only the scripts' own statements are reported (apply.sh turns QUIET off): the setup, record row and
+# schema check run quietly, and "-- backfill <id>" before each script tells the run summary which
+# script changed how many rows.
 migrate_plan() { # backfills.json
   cat <<'SQL'
 -- Migrate plan (plan.sh): each backfill script, its record row, then a check that it changed no schema.
+\set QUIET on
 CREATE TABLE IF NOT EXISTS tenant.__thor_backfills (
   id text PRIMARY KEY, sha256 text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now());
 SQL
   cat "$here/schema_fingerprint.sql"
   printf '%s\n' "SELECT pg_temp.thor_schema_fp() AS fp_before \\gset"
   jq -r '.pending[] | "\(.id)\t\(.sha256)"' "$1" | while IFS="$TAB" read -r bid bsha; do
-    printf '\n-- %s\n' "$bid"
+    printf '\n\\echo -- backfill %s\n\\set QUIET off\n' "$bid"
     cat "$here/backfills/$bid.sql"
     # backfills.sh only passes NNNN_<name> ids and hex hashes, so both are safe to quote.
-    printf "\nINSERT INTO tenant.__thor_backfills (id, sha256) VALUES ('%s', '%s');\n" "$bid" "$bsha"
-    echo "SELECT pg_temp.thor_assert_schema(:'fp_before');"
+    printf "\n\\\\set QUIET on\nINSERT INTO tenant.__thor_backfills (id, sha256) VALUES ('%s', '%s');\n" "$bid" "$bsha"
+    printf '%s\n' "SELECT pg_temp.thor_assert_schema(:'fp_before') \\gset"
   done
 }
 
