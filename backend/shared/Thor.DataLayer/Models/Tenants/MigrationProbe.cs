@@ -11,9 +11,6 @@ public sealed class MigrationProbe
     [Column("id")]
     public Guid Id { get; set; }
 
-    [Column("old_note")]
-    public string? OldNote { get; set; }
-
     [Column("new_note")]
     public string? NewNote { get; set; }
 }
