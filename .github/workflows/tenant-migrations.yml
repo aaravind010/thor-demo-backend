@@ -460,11 +460,50 @@ jobs:
             [ "$STATUS" = "RUNNING" ] || break
             sleep 20
           done
-          echo "Execution ${STATUS}" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "Execution ${STATUS}"
           if [ "$STATUS" != "SUCCEEDED" ]; then
             aws stepfunctions describe-execution --execution-arn "$EXECUTION_ARN" --query '[error, cause]' --output text
             exit 1
           fi
+
+      # Under the plan in the run summary: what each tenant's apply did — the statements applied
+      # (expand, contract) or each backfill's row count (migrate) — or the error that rolled it back.
+      - name: Apply result
+        if: always()
+        env:
+          EXECUTION_ARN: ${{ needs.plan.outputs.execution_arn }}
+        run: |
+          set -uo pipefail
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          BUCKET="thor-${ENVIRONMENT}-tenant-migration-new-${ACCOUNT_ID}"
+          STATUS=$(aws stepfunctions describe-execution --execution-arn "$EXECUTION_ARN" --query status --output text)
+          mkdir -p result && cd result
+          aws s3 cp --only-show-errors "s3://${BUCKET}/runs/${RUN_ID}/manifest.json" manifest.json || echo '[]' > manifest.json
+          for id in $(jq -r '.[].tenantId' manifest.json); do
+            aws s3 cp --only-show-errors "s3://${BUCKET}/runs/${RUN_ID}/results/${id}.json" "${id}.json" 2> /dev/null || echo '{}' > "${id}.json"
+            aws s3 cp --only-show-errors "s3://${BUCKET}/runs/${RUN_ID}/plans/${id}.sql" "${id}.sql" 2> /dev/null || : > "${id}.sql"
+            jq -c --arg id "$id" --rawfile plan "${id}.sql" \
+              '{tenantId: $id, result: ., plan: ($plan | split("\n") | map(select(length > 0)))}' "${id}.json"
+          done | jq -s '.' > rows.json
+          jq -r --arg env "$ENVIRONMENT" --arg phase "$PHASE" --arg status "$STATUS" '
+            def cell: gsub("\\|"; "\\|") | if length > 110 then .[0:110] + "…" else . end;
+            def changes:
+              if $phase == "migrate" then
+                (.result.output // []) | reduce .[] as $l ([];
+                  if ($l | startswith("-- backfill ")) then . + [($l | ltrimstr("-- backfill ")) + " →"]
+                  elif length > 0 then .[:-1] + [.[-1] + " " + $l] else . + [$l] end)
+                | join("<br>")
+              else .plan | map("`" + cell + "`") | join("<br>") end;
+            "## Apply result — \($env) (\($phase)): \(if $status == "SUCCEEDED" then "✅" else "❌" end) \($status)", "",
+            if length == 0 then "No tenant had anything to apply." else
+              "| Tenant | Result | At | What changed |", "|---|---|---|---|",
+              (.[] | "| `\(.tenantId)` | "
+                + (if .result.status == "applied" then "✅ applied" elif .result.status == "failed" then "❌ rolled back"
+                   else "⏹ not applied (stopped)" end)
+                + " | \(.result.at // "-") | "
+                + (if .result.status == "failed" then (.result.error // "" | cell) elif .result.status == "applied" then changes else "" end)
+                + " |")
+            end' rows.json >> "$GITHUB_STEP_SUMMARY"
 
   # Planning failed, or the approval was rejected / failed: stop the execution instead of leaving
   # it parked until the WaitForPlanAndApproval timeout. (Already-finished executions are fine.)

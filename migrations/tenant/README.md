@@ -148,6 +148,9 @@ The pipeline keeps the record: fleet expand runs save when each item first appea
   and the backfill script check.
 - Every run waits for **"Approve \<phase\>"** on the `<env>` environment, even with an empty plan.
   One run per environment at a time; a running one is never cancelled.
+- The run summary shows the plan and, once the apply ends, an **Apply result** per tenant: the
+  statements applied (expand, contract), each backfill's row count (migrate), or the error that
+  rolled the tenant back.
 
 Planner tests locally: `sh migrations/tenant/classify_test.sh`, `backfills_test.sh`, `contract_test.sh`.
 
