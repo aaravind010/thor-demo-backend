@@ -13,4 +13,7 @@ public sealed class MigrationProbe
 
     [Column("new_note")]
     public string? NewNote { get; set; }
+
+    [Column("score")]
+    public int? Score { get; set; }
 }
