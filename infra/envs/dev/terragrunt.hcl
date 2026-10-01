@@ -18,7 +18,7 @@ inputs = {
   private_subnet_cidrs = ["10.0.10.0/24", "10.0.11.0/24"]
   enable_vpc_endpoints = true
   public_subnet_cidrs  = ["10.0.0.0/24", "10.0.1.0/24"]
-  nat_gateway_mode     = "single" # dev target: "single"
+  nat_gateway_mode     = "none" # dev target: "single"
 
   # --- ecs compute ---
   # false until a real image has been pushed to each ECR repo below — the cluster/namespace/repos are created regardless.
