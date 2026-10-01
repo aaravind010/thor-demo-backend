@@ -11,57 +11,94 @@ public class MasterDbTenantRoutingRepositoryTests
     private static readonly MasterConnectionInfo ConnectionInfo =
         new(Host: "proxy.local", Database: "thor_master", Username: "thor_authorizer", Region: "us-east-1");
 
+    private static readonly Guid TenantId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+
     [Fact]
-    public async Task GetBySubdomainAsync_MapsTenantAndRouting_ToTenantRoute()
+    public async Task GetByUserPoolIdAsync_MapsRouting_ToTenantRoute()
     {
-        var databaseName = Guid.NewGuid().ToString();
-        var tenantId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var databaseName = await SeedAcmeAsync();
 
-        await SeedAsync(databaseName, new Tenant
-        {
-            TenantId = tenantId,
-            DisplayName = "Acme",
-            Subdomain = "acme",
-            Routing = new TenantRouting
-            {
-                TenantId = tenantId,
-                ClusterEndpoint = "tenant-proxy.local",
-                DatabaseName = "tenant_acme",
-                Region = "us-east-1",
-                UserPoolId = "pool-1",
-                AppClientId = "client-1",
-                DbUser = "tenant_acme_rw",
-                ReadOnlyDbUser = "tenant_acme_ro",
-            },
-        });
-
-        var route = await new MasterDbTenantRoutingRepository(new InMemoryFactory(databaseName), ConnectionInfo)
-            .GetBySubdomainAsync("acme");
+        var route = await CreateRepository(databaseName).GetByUserPoolIdAsync("us-east-1_Pool1");
 
         route.Should().NotBeNull();
-        route!.TenantId.Should().Be(tenantId.ToString());
-        route.Subdomain.Should().Be("acme");
-        route.UserPoolId.Should().Be("pool-1");
+        route!.TenantId.Should().Be(TenantId.ToString());
+        route.UserPoolId.Should().Be("us-east-1_Pool1");
         route.AppClientId.Should().Be("client-1");
         route.Region.Should().Be("us-east-1");
     }
 
     [Fact]
-    public async Task GetBySubdomainAsync_ReturnsNull_WhenSubdomainUnknown()
+    public async Task GetByUserPoolIdAsync_ReturnsNull_WhenPoolUnknown()
     {
-        var databaseName = Guid.NewGuid().ToString();
+        var databaseName = await SeedAcmeAsync();
 
-        var route = await new MasterDbTenantRoutingRepository(new InMemoryFactory(databaseName), ConnectionInfo)
-            .GetBySubdomainAsync("missing");
+        var route = await CreateRepository(databaseName).GetByUserPoolIdAsync("us-east-1_Missing");
 
         route.Should().BeNull();
     }
 
-    private static async Task SeedAsync(string databaseName, Tenant tenant)
+    [Fact]
+    public async Task GetByUserPoolIdAsync_IsCaseSensitive()
     {
+        var databaseName = await SeedAcmeAsync();
+
+        var route = await CreateRepository(databaseName).GetByUserPoolIdAsync("us-east-1_pool1");
+
+        route.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GetByTenantIdAsync_MapsRouting_ToTenantRoute()
+    {
+        var databaseName = await SeedAcmeAsync();
+
+        var route = await CreateRepository(databaseName).GetByTenantIdAsync(TenantId.ToString());
+
+        route.Should().NotBeNull();
+        route!.TenantId.Should().Be(TenantId.ToString());
+        route.UserPoolId.Should().Be("us-east-1_Pool1");
+    }
+
+    [Theory]
+    [InlineData("22222222-2222-2222-2222-222222222222")]
+    [InlineData("not-a-guid")]
+    public async Task GetByTenantIdAsync_ReturnsNull_WhenTenantUnknownOrMalformed(string tenantId)
+    {
+        var databaseName = await SeedAcmeAsync();
+
+        var route = await CreateRepository(databaseName).GetByTenantIdAsync(tenantId);
+
+        route.Should().BeNull();
+    }
+
+    private static MasterDbTenantRoutingRepository CreateRepository(string databaseName) =>
+        new(new InMemoryFactory(databaseName), ConnectionInfo);
+
+    private static async Task<string> SeedAcmeAsync()
+    {
+        var databaseName = Guid.NewGuid().ToString();
+
         await using var context = new MasterDbContext(OptionsFor(databaseName));
-        context.Tenants.Add(tenant);
+        context.Tenants.Add(new Tenant
+        {
+            TenantId = TenantId,
+            DisplayName = "Acme",
+            Subdomain = "acme",
+            Routing = new TenantRouting
+            {
+                TenantId = TenantId,
+                ClusterEndpoint = "tenant-proxy.local",
+                DatabaseName = "tenant_acme",
+                Region = "us-east-1",
+                UserPoolId = "us-east-1_Pool1",
+                AppClientId = "client-1",
+                DbUser = "tenant_acme_rw",
+                ReadOnlyDbUser = "tenant_acme_ro",
+            },
+        });
         await context.SaveChangesAsync();
+
+        return databaseName;
     }
 
     private static DbContextOptions<MasterDbContext> OptionsFor(string databaseName) =>

@@ -14,7 +14,11 @@ namespace Thor.Api.Services;
 /// its fields against the Master metadata DB, writes each field's secret value to Secrets
 /// Manager (see docs/architecture/ADR-CONNECTOR-CREDENTIAL-MANAGEMENT.md), then persists a named
 /// <see cref="AuthenticationMethod"/> plus its <see cref="AuthenticationValue"/>s (secret ARN
-/// only, no plaintext) in the caller's tenant database.
+/// only, no plaintext) in the caller's tenant database. Also backs
+/// <c>GET v{version}/authentication-methods/types</c>: lists the <see cref="AuthenticationType"/>
+/// reference rows from the Master metadata DB, optionally only those supported by one connector type,
+/// and <c>GET v{version}/authentication-methods/types/{typeId}/fields</c>: lists the
+/// <see cref="AuthenticationField"/>s a given authentication type requires.
 /// </summary>
 public sealed class AuthenticationMethodService(
     ITenantConnectionManager tenantConnectionManager,
@@ -109,6 +113,53 @@ public sealed class AuthenticationMethodService(
             method.Name,
             method.Description,
             method.AuthenticationValues.Select(v => v.Id).ToList());
+    }
+
+    public async Task<IReadOnlyList<AuthenticationTypeResponse>> ListTypesAsync(short? connectorType, CancellationToken cancellationToken)
+    {
+        using var masterDb = masterDbContextFactory.Create(masterConnectionInfo);
+        var typeRepository = new AuthenticationTypeRepository(masterDb);
+
+        var types = connectorType is { } filter
+            ? await typeRepository.GetByConnectorTypeAsync(filter, cancellationToken)
+            : await typeRepository.GetAllAsync(cancellationToken);
+
+        // Authentication types are deployment seed data, so an empty unfiltered table means the
+        // Master DB seed hasn't run (or failed) rather than a normal state. A filtered result can
+        // legitimately be empty (the connector has no mapped types yet).
+        if (types.Count == 0 && connectorType is null)
+        {
+            logger.LogWarning("No authentication types found in the Master DB; deployment seed may be missing");
+        }
+        else
+        {
+            logger.LogDebug("Listed {AuthenticationTypeCount} authentication type(s) for connector type {ConnectorType}", types.Count, connectorType);
+        }
+
+        return types
+            .OrderBy(t => t.Name, StringComparer.Ordinal)
+            .Select(t => new AuthenticationTypeResponse(t.Id, t.Name))
+            .ToList();
+    }
+
+    public async Task<IReadOnlyList<AuthenticationFieldResponse>> ListFieldsAsync(Guid typeId, CancellationToken cancellationToken)
+    {
+        using var masterDb = masterDbContextFactory.Create(masterConnectionInfo);
+        var typeRepository = new AuthenticationTypeRepository(masterDb);
+
+        // Distinguish an unknown type (404) from a known type that defines no fields (empty list).
+        _ = await typeRepository.GetByIdAsync(typeId, cancellationToken)
+            ?? throw new AuthenticationTypeNotFoundException(typeId);
+
+        var fieldRepository = new AuthenticationFieldRepository(masterDb);
+        var fields = await fieldRepository.GetByTypeIdAsync(typeId, cancellationToken);
+
+        logger.LogDebug("Listed {AuthenticationFieldCount} authentication field(s) for authentication type {AuthenticationTypeId}", fields.Count, typeId);
+
+        return fields
+            .OrderBy(f => f.Name, StringComparer.Ordinal)
+            .Select(f => new AuthenticationFieldResponse(f.Id, f.Name, f.DisplayName, f.InputType, f.Description))
+            .ToList();
     }
 
     private static void ValidateFields(IReadOnlyList<AuthenticationField> fields, IReadOnlyList<AuthenticationValueRequest> values)

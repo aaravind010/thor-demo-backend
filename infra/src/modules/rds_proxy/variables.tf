@@ -25,7 +25,12 @@ variable "aurora_cluster_identifier" {
 
 variable "aurora_cluster_resource_id" {
   type        = string
-  description = "Aurora cluster resource ID — used to scope the proxy role's rds-db:connect ARN. End-to-end IAM means no master secret is involved."
+  description = "Aurora cluster resource ID — used to scope the proxy role's rds-db:connect ARN."
+}
+
+variable "master_user_secret_arn" {
+  type        = string
+  description = "ARN of Aurora's auto-managed master-user secret. Only used to satisfy the AWS API's mandatory SecretArn field on the proxy's auth config — its password is never checked, since iam_auth = \"REQUIRED\" forces every client to authenticate with an IAM token instead."
 }
 
 variable "iam_permissions_boundary_arn" {

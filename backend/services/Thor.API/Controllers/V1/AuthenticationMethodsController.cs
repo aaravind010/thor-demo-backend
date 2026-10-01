@@ -66,4 +66,34 @@ public class AuthenticationMethodsController(
             return StatusCode(StatusCodes.Status403Forbidden);
         }
     }
+
+    // Authentication types are Master-DB reference data shared by every tenant, so unlike Create
+    // no X-THOR-TENANT-ID is needed; the Lambda authorizer still gates the route. Pass
+    // ?connectorType= to list only the types that connector supports.
+    [HttpGet("types")]
+    public async Task<ActionResult<IReadOnlyList<AuthenticationTypeResponse>>> ListTypes(
+        [FromQuery] short? connectorType, CancellationToken cancellationToken)
+    {
+        var response = await authenticationMethodService.ListTypesAsync(connectorType, cancellationToken);
+        return Ok(response);
+    }
+
+    // Like ListTypes, authentication fields are Master-DB reference data, so no X-THOR-TENANT-ID
+    // is needed. Returns the fields a caller must supply values for when creating an
+    // authentication method of this type.
+    [HttpGet("types/{typeId:guid}/fields")]
+    public async Task<ActionResult<IReadOnlyList<AuthenticationFieldResponse>>> ListFields(
+        Guid typeId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var response = await authenticationMethodService.ListFieldsAsync(typeId, cancellationToken);
+            return Ok(response);
+        }
+        catch (AuthenticationTypeNotFoundException ex)
+        {
+            logger.LogWarning(ex, "Authentication field listing rejected: authentication type {AuthenticationTypeId} not found", typeId);
+            return NotFound(ex.Message);
+        }
+    }
 }

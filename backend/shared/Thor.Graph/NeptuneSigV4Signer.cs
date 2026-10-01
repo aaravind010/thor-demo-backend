@@ -35,12 +35,27 @@ internal static class NeptuneSigV4Signer
         var clientConfig = BuildClientConfig(region);
         var immutable = credentials.GetCredentials();
 
+        // AWS4Signer signs ResourcePath as the path only and builds the canonical query from
+        // Parameters, so a query left inside ResourcePath yields a signature Neptune rejects.
+        var queryStart = resourcePath.IndexOf('?');
         var request = new DefaultRequest(new NeptuneSigningRequest(), ServiceName)
         {
             HttpMethod = httpMethod,
             Endpoint = endpoint,
-            ResourcePath = resourcePath,
+            ResourcePath = queryStart < 0 ? resourcePath : resourcePath[..queryStart],
         };
+
+        if (queryStart >= 0)
+        {
+            request.UseQueryString = true;
+            foreach (var pair in resourcePath[(queryStart + 1)..].Split('&', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var separator = pair.IndexOf('=');
+                var name = separator < 0 ? pair : pair[..separator];
+                var value = separator < 0 ? string.Empty : pair[(separator + 1)..];
+                request.Parameters[Uri.UnescapeDataString(name)] = Uri.UnescapeDataString(value);
+            }
+        }
 
         if (body is { Length: > 0 })
         {

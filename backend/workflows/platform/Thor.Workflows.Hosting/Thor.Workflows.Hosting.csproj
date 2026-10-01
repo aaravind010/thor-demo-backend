@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The runtime half of the workflow platform: the two compute-target hosts, the entry point that
+    picks between them, and the shared composition every workflow module needs. Everything with a
+    dependency lives here so Thor.Workflows.Abstractions can stay pure contracts.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <RootNamespace>Thor.Workflows.Hosting</RootNamespace>
+    <AssemblyName>Thor.Workflows.Hosting</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.4" />
+    <PackageReference Include="Amazon.Lambda.RuntimeSupport" Version="1.12.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Thor.Workflows.Abstractions\Thor.Workflows.Abstractions.csproj" />
+    <ProjectReference Include="..\..\..\shared\Thor.DataLayer\Thor.DataLayer.csproj" />
+    <ProjectReference Include="..\..\..\shared\Thor.DataConnectionManager\Thor.DataConnectionManager.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Thor.Workflows.Hosting.Tests" />
+  </ItemGroup>
+
+</Project>

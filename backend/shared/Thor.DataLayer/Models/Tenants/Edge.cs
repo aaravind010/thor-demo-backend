@@ -9,9 +9,12 @@ namespace Thor.DataLayer.Models.Tenants;
 /// identified polymorphically by <see cref="FromType"/>/<see cref="FromId"/> and
 /// <see cref="ToType"/>/<see cref="ToId"/>, reconciled from staged ingestion rows (see
 /// ADR §12 Ingestion &amp; CDC) against this table.
+/// The (ToId, RelType) index serves traversals that arrive at an edge's target side — Ownership's
+/// inbound hops and its walk propagation, which expands from a parent to the children pointing at it.
 /// </summary>
 [Table("edge")]
 [Index(nameof(FromId), nameof(ToId), nameof(RelType), IsUnique = true)]
+[Index(nameof(ToId), nameof(RelType))]
 public sealed class Edge
 {
     [Key]

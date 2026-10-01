@@ -12,7 +12,7 @@
 -- Least privilege by role — each identity gets only what its job needs:
 --   thor_provisioner      DDL only: create tenant databases + their roles
 --   thor_metadata_writer  write tenant + tenant_routing rows (no DDL power)
---   thor_app              runtime read of tenant routing
+--   thor_app              runtime read of tenant routing + connector API-key/refresh-token writes
 --   thor_authorizer       authorizer's read-only subdomain -> routing lookup
 --   thor_master_seed      write access to the specific master/auth tables seeded today
 --
@@ -65,7 +65,8 @@ BEGIN
 END
 $$;
 
--- ── thor_app ── runtime read identity (services resolve tenant routing). IAM, read-only.
+-- ── thor_app ── runtime identity (services resolve tenant routing). IAM. Read-only except the
+--   connector API-key / refresh-token tables in auth, which the Thor.Api auth endpoints write.
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'thor_app') THEN
@@ -87,6 +88,27 @@ BEGIN
   IF EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'master') THEN
     GRANT USAGE ON SCHEMA master TO thor_app;
     GRANT SELECT ON ALL TABLES IN SCHEMA master TO thor_app;
+  END IF;
+  -- Each table below is guarded on its own so one missing table (e.g. a stale schema when
+  -- migrations are skipped) can't silently drop the others' grants.
+  -- Per-tenant log sink lookup (TenantLogSinkResolver, Thor.Api + Thor.TaskApi).
+  IF to_regclass('auth.tenant_log_sink_config') IS NOT NULL THEN
+    GRANT SELECT ON auth.tenant_log_sink_config TO thor_app;
+  END IF;
+  -- Connector API-key issuance (ConnectorApiKeyService) + Task API token exchange
+  -- (ConnectorAuthService). No DELETE; UPDATE is column-scoped to the one column each flow
+  -- changes. key_scope_map.id is an identity column, so no sequence grant is needed.
+  IF to_regclass('auth.api_scopes') IS NOT NULL THEN
+    GRANT SELECT ON auth.api_scopes TO thor_app;
+  END IF;
+  IF to_regclass('auth.tenant_api_key') IS NOT NULL THEN
+    GRANT SELECT, INSERT, UPDATE (last_used_at) ON auth.tenant_api_key TO thor_app;
+  END IF;
+  IF to_regclass('auth.key_scope_map') IS NOT NULL THEN
+    GRANT SELECT, INSERT ON auth.key_scope_map TO thor_app;
+  END IF;
+  IF to_regclass('auth.task_api_refresh_token') IS NOT NULL THEN
+    GRANT SELECT, INSERT, UPDATE (revoked_at) ON auth.task_api_refresh_token TO thor_app;
   END IF;
 END
 $$;
@@ -133,11 +155,12 @@ BEGIN
   IF to_regclass('master.authentication_types') IS NOT NULL
      AND to_regclass('master.connector_config_fields') IS NOT NULL
      AND to_regclass('master.authentication_fields') IS NOT NULL
-     AND to_regclass('master.connector_types') IS NOT NULL THEN
+     AND to_regclass('master.connector_types') IS NOT NULL
+     AND to_regclass('master.authentication_type_connector_types') IS NOT NULL THEN
     GRANT USAGE ON SCHEMA master TO thor_master_seed;
     GRANT SELECT, INSERT, UPDATE ON
       master.authentication_types, master.connector_config_fields, master.authentication_fields,
-      master.connector_types
+      master.connector_types, master.authentication_type_connector_types
       TO thor_master_seed;
   END IF;
 

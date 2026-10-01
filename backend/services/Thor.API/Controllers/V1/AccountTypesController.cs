@@ -45,4 +45,51 @@ public class AccountTypesController(AccountTypeService accountTypeService) : Con
             return StatusCode(StatusCodes.Status403Forbidden);
         }
     }
+
+    [HttpGet]
+    public async Task<ActionResult<CursorPage<AccountTypeResponse>>> List(
+        [FromQuery] Guid? after,
+        [FromQuery] int limit = PagingConstants.DefaultLimit,
+        CancellationToken cancellationToken = default)
+    {
+        if (!Request.Headers.TryGetValue(TenantConstants.TenantHeaderName, out var tenantHeaderValue) ||
+            !Guid.TryParse(tenantHeaderValue, out var tenantId))
+        {
+            return BadRequest($"Missing or invalid '{TenantConstants.TenantHeaderName}' header.");
+        }
+
+        if (limit is < 1 or > PagingConstants.MaxLimit)
+        {
+            return BadRequest(PagingConstants.InvalidLimitMessage);
+        }
+
+        try
+        {
+            return Ok(await accountTypeService.ListAsync(tenantId, after, limit, cancellationToken));
+        }
+        catch (TenantNotFoundException)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden);
+        }
+    }
+
+    [HttpGet("{id:guid}")]
+    public async Task<ActionResult<AccountTypeResponse>> Get(Guid id, CancellationToken cancellationToken)
+    {
+        if (!Request.Headers.TryGetValue(TenantConstants.TenantHeaderName, out var tenantHeaderValue) ||
+            !Guid.TryParse(tenantHeaderValue, out var tenantId))
+        {
+            return BadRequest($"Missing or invalid '{TenantConstants.TenantHeaderName}' header.");
+        }
+
+        try
+        {
+            var response = await accountTypeService.GetAsync(tenantId, id, cancellationToken);
+            return response is null ? NotFound() : Ok(response);
+        }
+        catch (TenantNotFoundException)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden);
+        }
+    }
 }

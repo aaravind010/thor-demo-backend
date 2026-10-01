@@ -158,3 +158,47 @@ resource "aws_iam_role_policy" "task_tenant_secrets" {
     }]
   })
 }
+
+# thor-api's IdentityProviderService lets a tenant admin manage SAML/OIDC IdPs on that tenant's own
+# user pool and enable them on its app client. Pools are created at runtime by tenant provisioning
+# and their ARNs carry the pool id, not a name, so this can't be narrowed per tenant here — the
+# service only ever targets the pool resolved from the verified tenant's tenant_routing row.
+resource "aws_iam_role_policy" "task_cognito_idp" {
+  for_each = toset(contains(keys(local.active_services), "thor-api") ? ["thor-api"] : [])
+
+  name = "cognito-identity-providers"
+  role = aws_iam_role.task[each.key].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "cognito-idp:CreateIdentityProvider",
+        "cognito-idp:UpdateIdentityProvider",
+        "cognito-idp:DeleteIdentityProvider",
+        "cognito-idp:DescribeIdentityProvider",
+        "cognito-idp:ListIdentityProviders",
+        "cognito-idp:DescribeUserPoolClient",
+        "cognito-idp:UpdateUserPoolClient",
+      ]
+      Resource = "arn:aws:cognito-idp:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:userpool/*"
+    }]
+  })
+}
+
+# task-api's AuthenticationSecretReader reads those same secrets to serve GET /tasks/{taskId}/settings.
+# Read-only: task-api never creates or overwrites tenant credentials.
+resource "aws_iam_role_policy" "task_tenant_secrets_read" {
+  for_each = toset(contains(keys(local.active_services), "task-api") ? ["task-api"] : [])
+
+  name = "tenant-credential-secrets-read"
+  role = aws_iam_role.task[each.key].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = "arn:aws:secretsmanager:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:secret:tenant/*"
+    }]
+  })
+}

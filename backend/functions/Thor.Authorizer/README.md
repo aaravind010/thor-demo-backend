@@ -1,9 +1,22 @@
 # Thor API Gateway Lambda Authorizer
 
-Multi-tenant AWS API Gateway REQUEST authorizer. Validates Cognito JWTs and
-tenant-issued API keys, resolves the tenant from the request's `Host` subdomain, and returns an
-IAM policy with a flattened context (`tenant_id`, `caller_type`, `principal_id`, `scopes`) for the
-downstream API. Route-level RBAC is enforced by the backend API, not here.
+Multi-tenant AWS API Gateway REQUEST authorizer. Validates Cognito JWTs, Thor-issued connector
+JWTs and tenant-issued API keys, and returns an IAM policy with a flattened context (`tenant_id`,
+`caller_type`, `principal_id`, `scopes`) for the downstream API. Route-level RBAC is enforced by
+the backend API, not here.
+
+The tenant comes **only from the credential**. No `Host` or other header is read: behind
+CloudFront, `Host` is the execute-api origin's, and forwarded-host headers are caller-controlled
+(ADR §5):
+
+| Credential | Tenant source |
+|---|---|
+| Cognito access token | Pool id in `iss` → `auth.tenant_routing.user_pool_id` (unique), then the token is verified against that pool |
+| Thor-issued JWT (`iss = thor-task-api`) | The token's signature-verified tenant claim, which must exist in `auth.tenant_routing` |
+| API key | The stored key record's tenant, once the secret verifies |
+
+A Cognito `iss` that isn't exactly `https://cognito-idp.{region}.amazonaws.com/{region}_{id}` is
+denied before any DB lookup (`CognitoIssuerParser`).
 
 ## Solution layout
 
@@ -12,8 +25,8 @@ downstream API. Route-level RBAC is enforced by the backend API, not here.
 - `test/Thor.Authorizer.Test` — xUnit + FluentAssertions + NSubstitute.
 
 `Core`'s `DataAccess` layer is built against interfaces only (`ITenantRoutingRepository`,
-`IApiKeyRepository`), currently wired to in-memory fakes in `CompositionRoot`. The real DB-backed
-implementations are a separate project being built independently and will be swapped in via DI.
+`IApiKeyRepository`). Tenant routing is wired to the Master DB (`MasterDbTenantRoutingRepository`);
+the API-key store is still the in-memory fake in `CompositionRoot` until its real repository lands.
 
 ## Provisioning contracts (infra-side requirements this code assumes)
 

@@ -8,5 +8,7 @@ namespace Thor.DataLayer.Models.Tenants;
 /// </summary>
 public static class WellKnownAccountTypes
 {
-    public static readonly Guid Unclassified = Guid.Parse("00000000-0000-0000-0000-000000000001");
+    // TODO: Unclassified is temporarily overridden with a workaround GUID for dev
+    // testing purposes. Revert to 00000000-0000-0000-0000-000000000001 once testing is complete.
+    public static readonly Guid Unclassified = Guid.Parse("ae4be604-7120-4a83-9eb6-9b0475c7bdd9");
 }

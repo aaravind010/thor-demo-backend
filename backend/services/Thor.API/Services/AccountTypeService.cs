@@ -6,8 +6,8 @@ using Thor.DataLayer.Repositories;
 namespace Thor.Api.Services;
 
 /// <summary>
-/// Backs <c>POST /account-type</c>: creates an <see cref="AccountType"/> row in the caller's
-/// tenant database.
+/// Backs <c>POST /account-type</c>, <c>GET /account-type</c> and <c>GET /account-type/{id}</c>:
+/// creates and reads <see cref="AccountType"/> rows in the caller's tenant database.
 /// </summary>
 public sealed class AccountTypeService(ITenantConnectionManager tenantConnectionManager)
 {
@@ -31,6 +31,21 @@ public sealed class AccountTypeService(ITenantConnectionManager tenantConnection
         await transaction.CommitAsync(cancellationToken);
 
         return ToResponse(accountType);
+    }
+
+    public async Task<CursorPage<AccountTypeResponse>> ListAsync(
+        Guid tenantId, Guid? after, int limit, CancellationToken cancellationToken)
+    {
+        using var tenantDb = await tenantConnectionManager.GetTenantDbContextAsync(tenantId, cancellationToken);
+        var page = await new AccountTypeRepository(tenantDb).ListAsync(after, limit, cancellationToken);
+        return new CursorPage<AccountTypeResponse>(page.Items.Select(ToResponse).ToList(), page.NextCursor);
+    }
+
+    public async Task<AccountTypeResponse?> GetAsync(Guid tenantId, Guid id, CancellationToken cancellationToken)
+    {
+        using var tenantDb = await tenantConnectionManager.GetTenantDbContextAsync(tenantId, cancellationToken);
+        var accountType = await new AccountTypeRepository(tenantDb).GetByIdAsync(id, cancellationToken);
+        return accountType is null ? null : ToResponse(accountType);
     }
 
     private static AccountTypeResponse ToResponse(AccountType accountType) => new(

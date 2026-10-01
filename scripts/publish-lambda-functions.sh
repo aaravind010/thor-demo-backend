@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Publishes each backend/functions/<Name>'s and backend/workflows/<Name>'s Lambda entry point into its own
-# publish/ dir — Terraform can only zip files, not compile C#. Run by root.hcl's before_hook on every terragrunt
-# plan/apply/destroy. The entry point is whichever *.csproj under <Name>/src/ (any depth) has
-# <AWSProjectType>Lambda</AWSProjectType>; a plain library like Core has no such marker and is skipped — its
-# ProjectReference gets pulled in automatically anyway. Workflow modules that ship as a container image
-# (no src/, a Dockerfile) never match and are left to the image pipeline.
+# Publishes each backend/functions/<Name>'s Lambda entry point into its own publish/ dir — Terraform can only
+# zip files, not compile C#. Run by root.hcl's before_hook on every terragrunt plan/apply/destroy. The entry
+# point is whichever *.csproj under <Name>/src/ (any depth) has <AWSProjectType>Lambda</AWSProjectType>; a plain
+# library like Core has no such marker and is skipped — its ProjectReference gets pulled in automatically anyway.
+#
+# backend/workflows is deliberately NOT scanned. Every workflow module ships as a container image, and its
+# Lambdas are that same image (package_type = "Image"), so none of them needs a zip. The last exception,
+# Thor.Workflows.IngestionDriver, became THOR_STEP=select-compute inside the ingestion image.
 # Skips a rebuild if src/ + backend/shared/ + global.json are unchanged (local .publish-hash), else falls through
 # to a per-function JFrog cache (JFROG_LAMBDA_ARTIFACTS_REPOSITORY, keyed by content hash) before a real dotnet
 # publish. Hash excludes bin/obj and lives outside publish/ so it isn't zipped into the deployed package.
@@ -25,7 +27,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SCAN_DIRS=("${REPO_ROOT}/backend/functions" "${REPO_ROOT}/backend/workflows")
+SCAN_DIRS=("${REPO_ROOT}/backend/functions")
 SHARED_DIR="${REPO_ROOT}/backend/shared"
 DATALAYER_DIR="${SHARED_DIR}/Thor.DataLayer"
 

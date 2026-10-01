@@ -1,0 +1,90 @@
+name: Roll services
+
+# Restarts thor-api, task-api and intelligence-engine onto their CURRENT task definitions, without
+# changing the image.
+#
+# This is the explicit replacement for the sibling-sync that used to be folded into every ecs-deploy.
+# Its one real job is picking up an out-of-band secret rotation: scripts/seed-connector-secrets.sh
+# writes a new connector JWT keypair and API-key pepper into Secrets Manager, and a running task keeps
+# the old value until it is replaced. Those secrets reach the containers as `valueFrom` ARNs
+# (infra/src/main.tf's service_app_secrets), which ECS re-resolves when a task starts — so forcing a
+# new deployment is enough, and no task-definition change is needed.
+#
+# All three services roll together because they must agree on the keypair: thor-api mints connector
+# tokens with the private half, task-api and the authorizer verify with the public half (ADR §5.2).
+# Rolling one without the others is what makes tokens stop verifying somewhere.
+#
+# Deliberately does NOT read or set an image. The old sibling-sync resolved each sibling's image from
+# `describe-task-definition`, which returns the family's latest ACTIVE revision — and terragrunt apply
+# registers revisions pinned to `<repo>:latest`, so a sync could silently roll a service onto the
+# placeholder image. --force-new-deployment cannot do that.
+#
+# After running this against qa or prod, see infra/bootstrap/connector-secrets.md: every connector JWT
+# and stored API-key hash minted under the previous values stops verifying.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment whose services should be restarted"
+        required: true
+        type: choice
+        options: [dev, qa, prod]
+      reason:
+        description: "Why (e.g. 'picked up connector keypair rotation') — recorded in the run log"
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+# Shares the aws-<branch> group with deploy.yml and infra.yml so a roll cannot interleave with a
+# deploy or an apply against the same environment.
+concurrency:
+  group: aws-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  roll:
+    runs-on: ubuntu-latest
+    # Same per-env Environments as deploy.yml — qa and prod require review.
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/ecr-login
+        with:
+          role_arn: ${{ inputs.environment == 'dev' && vars.DEV_AWS_ROLE_ARN || inputs.environment == 'qa' && vars.QA_AWS_ROLE_ARN || vars.PROD_AWS_ROLE_ARN }}
+          region: ${{ inputs.environment == 'dev' && vars.DEV_AWS_REGION || inputs.environment == 'qa' && vars.QA_AWS_REGION || vars.PROD_AWS_REGION }}
+
+      - name: Force a new deployment on all three services
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          REASON: ${{ inputs.reason }}
+        run: |
+          set -euo pipefail
+          echo "Rolling thor-api, task-api and intelligence-engine in ${ENVIRONMENT}."
+          echo "Reason: ${REASON}"
+
+          CLUSTER="thor-${ENVIRONMENT}"
+          SERVICES=(thor-api task-api intelligence-engine)
+
+          for SERVICE in "${SERVICES[@]}"; do
+            aws ecs update-service \
+              --cluster "$CLUSTER" \
+              --service "$SERVICE" \
+              --force-new-deployment \
+              >/dev/null
+            echo "[$SERVICE] new deployment requested"
+          done
+
+          # Waited on after all three are requested, so they roll concurrently rather than in series.
+          for SERVICE in "${SERVICES[@]}"; do
+            echo "[$SERVICE] waiting for stable..."
+            aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE"
+            echo "[$SERVICE] stable"
+          done
+
+          echo "All three services rolled."

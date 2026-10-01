@@ -43,20 +43,23 @@ inputs = {
       bake_time_in_minutes  = 5
     }
     task-api = {
-      container_image       = ""
-      container_port        = 8443
-      cpu                   = 512  # 0.5 vCPU
-      memory                = 1024 # 1 GB
-      desired_count         = 2
-      min_healthy_percent   = 100
-      max_percent           = 200
-      health_check_path     = "/health"
-      log_retention_days    = 30
-      environment_variables = {}
-      secrets               = {}
-      expose_via_nlb        = false
-      deployment_strategy   = "BLUE_GREEN"
-      bake_time_in_minutes  = 5
+      container_image     = ""
+      container_port      = 8443
+      cpu                 = 512  # 0.5 vCPU
+      memory              = 1024 # 1 GB
+      desired_count       = 2
+      min_healthy_percent = 100
+      max_percent         = 200
+      health_check_path   = "/health"
+      log_retention_days  = 30
+      environment_variables = {
+        THOR_TASKAPI_SCAN_TASK_STALL_TIMEOUT_SECONDS = "1800"
+        THOR_TASKAPI_SCAN_TASK_MAX_RETRIES           = "3"
+      }
+      secrets              = {}
+      expose_via_nlb       = false
+      deployment_strategy  = "BLUE_GREEN"
+      bake_time_in_minutes = 5
     }
     intelligence-engine = {
       container_image       = ""
@@ -144,10 +147,24 @@ inputs = {
   # get_repo_root() stays valid across any Terragrunt cache copy. dotnet publish must have already written here.
   authorizer_source_dir = "${get_repo_root()}/backend/functions/Thor.Authorizer/publish"
 
-  # --- ingestion pipeline ---
-  enable_ingestion            = false
-  create_manifest_source_dir  = "${get_repo_root()}/backend/functions/Thor.CreateManifest/publish"
-  ingestion_driver_source_dir = "${get_repo_root()}/backend/workflows/Thor.Workflows.IngestionDriver/publish"
+  # --- workflows ---
+  # Each name must have a matching entry in local.workflow_definitions (infra/src/workflow_definitions.tf),
+  # which is where its steps, buckets and trigger live. The ECR repository and security group are
+  # created regardless of enabled -- an image has to be pushable before the compute that runs it
+  # exists, and rds_proxy/neptune build their ingress rules from the security group.
+  #
+  # Deploying a new image does NOT require a Terraform apply: Terraform points the compute at a
+  # floating tag and CI moves that tag. enabled gates whether the workflow exists at all.
+  workflows = {
+    ingestion = { enabled = false }
+    atre      = { enabled = false }
+    ownership = { enabled = false }
+  }
+
+  # Lets Neptune's bulk loader read these workflows' graph-load buckets, each once it is enabled.
+  neptune_bulk_load_workflows = ["ingestion", "ownership"]
+
+  create_manifest_source_dir = "${get_repo_root()}/backend/functions/Thor.CreateManifest/publish"
 
   # --- neptune graph db ---
   enable_neptune                = true
@@ -174,10 +191,6 @@ inputs = {
 
   # --- db bootstrap (in-VPC Lambda that mints the platform DB roles as master) ---
   db_bootstrap_source_dir = "${get_repo_root()}/backend/functions/Thor.DbBootstrap/publish"
-
-  # --- tenant schema migrations (expand phase; deploy.yml gates service deploys on it) ---
-  enable_tenant_migration   = true
-  tenant_migration_asl_path = "${get_repo_root()}/migrations/tenant/statemachine/tenant-migration.asl.json"
 
   tags = {}
 }

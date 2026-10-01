@@ -47,6 +47,7 @@ concurrency:
 jobs:
   start-execution:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     # Reuses the shared per-env Environments; qa/prod require review before the job runs.
     environment: ${{ inputs.environment }}
     steps:

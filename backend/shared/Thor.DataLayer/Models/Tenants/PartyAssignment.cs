@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
+using Microsoft.EntityFrameworkCore;
 
 namespace Thor.DataLayer.Models.Tenants;
 
@@ -7,8 +8,11 @@ namespace Thor.DataLayer.Models.Tenants;
 /// The current identity assigned a role against an entity (identified polymorphically
 /// by <see cref="EntityType"/>/<see cref="EntityId"/>) — e.g. an asset owner or
 /// account manager — with the voting/precision context that produced it.
+/// Unique on (EntityType, EntityId, IdentityId, RunId): the conflict target of Ownership's
+/// <c>ON CONFLICT DO NOTHING</c> upsert, which Postgres rejects without a matching unique index.
 /// </summary>
 [Table("party_assignment")]
+[Index(nameof(EntityType), nameof(EntityId), nameof(IdentityId), nameof(RunId), IsUnique = true)]
 public sealed class PartyAssignment
 {
     [Key]

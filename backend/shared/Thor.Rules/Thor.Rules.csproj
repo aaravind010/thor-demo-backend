@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Thor.Rules</RootNamespace>
+    <AssemblyName>Thor.Rules</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <PackageId>Thor.Rules</PackageId>
+    <Version>0.1.0</Version>
+    <Description>Shared rule_definition schemas and validators for account type rules (ATRE) and ownership rules, used by the workflow engines and by Thor.Api when authoring rules.</Description>
+  </PropertyGroup>
+
+</Project>

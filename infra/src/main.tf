@@ -11,6 +11,15 @@ terraform {
 
 locals {
   iam_permissions_boundary_arn = "arn:aws:iam::${var.account_id}:policy/thor-${var.environment}-role-boundary"
+
+  # Neptune's bulk-load role exists only when a workflow that writes the CSVs is actually deployed,
+  # and may read only the graph-load buckets of those that are. try() rather than a direct index so
+  # a name with no matching workflows entry is false rather than an error — the variable's
+  # validation is what reports a typo.
+  neptune_bulk_load_enabled_workflows = [
+    for name in var.neptune_bulk_load_workflows : name if try(var.workflows[name].enabled, false)
+  ]
+  neptune_bulk_load_active = length(local.neptune_bulk_load_enabled_workflows) > 0
 }
 
 module "network" {
@@ -122,7 +131,7 @@ module "ecs" {
   services = local.services_with_shared_secrets
 
   nlb_certificate_arn = local.backend_route53 != null ? local.backend_route53.certificate_arn : ""
-  
+
   # RDS IAM: the .NET services read the Master DB and connect to tenant DBs, so their task roles
   # need rds-db:connect. intelligence-engine reaches tenant DBs (ro) via IAM too. Scoped to the
   # proxy, since local.db_host is the proxy endpoint — see the module's own iam.tf comment.
@@ -258,13 +267,13 @@ module "api_gateway" {
 
   source = "./modules/api_gateway"
 
-  environment            = var.environment
-  service_name           = local.public_service_name
-  nlb_listener_arn       = module.ecs.nlb_listener_arns[local.public_service_name]
-  nlb_security_group_id  = module.ecs.nlb_security_group_ids[local.public_service_name]
-  nlb_listener_port      = var.services[local.public_service_name].nlb_listener_port
-  vpc_id                 = local.vpc_id
-  private_subnet_ids     = local.private_subnet_ids
+  environment           = var.environment
+  service_name          = local.public_service_name
+  nlb_listener_arn      = module.ecs.nlb_listener_arns[local.public_service_name]
+  nlb_security_group_id = module.ecs.nlb_security_group_ids[local.public_service_name]
+  nlb_listener_port     = var.services[local.public_service_name].nlb_listener_port
+  vpc_id                = local.vpc_id
+  private_subnet_ids    = local.private_subnet_ids
 
   authorizer_lambda_invoke_arn    = module.lambda.lambda_invoke_arn
   authorizer_lambda_function_name = module.lambda.lambda_function_name
@@ -299,9 +308,9 @@ module "uploads" {
 module "secrets" {
   source = "./modules/secrets"
 
-  environment = var.environment
+  environment             = var.environment
   recovery_window_in_days = var.secrets_recovery_window_in_days
-  tags = var.tags
+  tags                    = var.tags
 }
 
 # Resolves subdomain -> tenant routing from the Master DB. Runs in-VPC and connects through the
@@ -349,9 +358,9 @@ module "db_bootstrap" {
   aurora_database_name     = module.aurora.database_name
   master_user_secret_arn   = module.aurora.master_user_secret_arn
 
-  source_dir                    = var.db_bootstrap_source_dir
-  skip_migrations               = var.db_bootstrap_skip_migrations
-  iam_permissions_boundary_arn  = local.iam_permissions_boundary_arn
+  source_dir                   = var.db_bootstrap_source_dir
+  skip_migrations              = var.db_bootstrap_skip_migrations
+  iam_permissions_boundary_arn = local.iam_permissions_boundary_arn
 
   # The invocation connects to the DB at apply, so wait for the whole aurora module — the cluster
   # endpoint output alone doesn't order this after the instance being ready to accept connections.
@@ -397,6 +406,7 @@ module "rds_proxy" {
 
   aurora_cluster_identifier  = module.aurora.cluster_identifier
   aurora_cluster_resource_id = module.aurora.cluster_resource_id
+  master_user_secret_arn     = module.aurora.master_user_secret_arn
 
   iam_permissions_boundary_arn = local.iam_permissions_boundary_arn
 
@@ -405,45 +415,11 @@ module "rds_proxy" {
       thor-api = module.ecs.service_security_group_ids["thor-api"]
       task-api = module.ecs.service_security_group_ids["task-api"]
     } : {},
-    # The ingestion ECS tasks and Lambda functions (CreateManifest, driver, per-step) all sit on
-    # this one SG and all read the Master DB through the proxy.
-    var.enable_ingestion ? {
-      ingestion = module.ingestion.task_security_group_id
-    } : {},
-    # The tenant-migration runner reads routing and diffs/applies every tenant DB via the proxy.
-    var.enable_tenant_migration ? {
-      tenant-migration = module.tenant_migration[0].task_security_group_id
-    } : {}
+    # Every workflow compute target — ECS tasks, per-step Lambdas, the trigger handler — sits on its
+    # workflow's SG and reads the Master DB through the proxy. Read from module.workflow_network, not
+    # from the workflow itself, so this has no dependency on any workflow's state.
+    { for name, id in module.workflow_network.security_group_ids : "workflow-${name}" => id }
   )
-
-  tags = var.tags
-}
-
-module "ingestion" {
-  source = "./modules/ingestion"
-
-  environment                  = var.environment
-  account_id                   = var.account_id
-  aws_region                   = var.aws_region
-  enable_ingestion             = var.enable_ingestion
-  vpc_id                       = local.vpc_id
-  private_subnet_ids           = local.private_subnet_ids
-  enable_container_insights    = var.enable_container_insights
-  iam_permissions_boundary_arn = local.iam_permissions_boundary_arn
-  create_manifest_source_dir   = var.create_manifest_source_dir
-  ingestion_driver_source_dir  = var.ingestion_driver_source_dir
-
-  # RDS IAM: every ingestion compute target reads the Master DB for routing and then connects to
-  # the tenant DB, so they all need rds-db:connect. Scoped to the proxy, since db_host is the proxy
-  # endpoint — same reasoning as the ecs module's wiring above.
-  db_host               = module.rds_proxy.endpoint
-  db_name               = module.aurora.database_name
-  rds_proxy_resource_id = module.rds_proxy.proxy_resource_id
-  master_db_app_user    = var.master_db_app_user
-
-  neptune_endpoint            = var.enable_neptune ? module.neptune[0].endpoint : ""
-  neptune_cluster_resource_id = var.enable_neptune ? module.neptune[0].cluster_resource_id : ""
-  neptune_loader_role_arn     = var.enable_neptune ? module.neptune[0].bulk_load_role_arn : ""
 
   tags = var.tags
 }
@@ -452,21 +428,20 @@ module "ingestion" {
 module "neptune" {
   count = var.enable_neptune ? 1 : 0
 
-  source = "./modules/neptune"
+  source             = "./modules/neptune"
   environment        = var.environment
   vpc_id             = local.vpc_id
   vpc_cidr           = local.vpc_cidr_effective
   private_subnet_ids = local.private_subnet_ids
-  create_ingress     = var.enable_compute || var.enable_ingestion
+  create_ingress     = var.enable_compute || length(var.workflows) > 0
+  s3_prefix_list_id  = module.network.s3_prefix_list_id
 
   consumer_security_group_ids = merge(
     var.enable_compute ? {
       intelligence-engine = module.ecs.service_security_group_ids["intelligence-engine"]
       task-api            = module.ecs.service_security_group_ids["task-api"]
     } : {},
-    var.enable_ingestion ? {
-      ingestion = module.ingestion.task_security_group_id
-    } : {}
+    { for name, id in module.workflow_network.security_group_ids : "workflow-${name}" => id }
   )
 
   engine_version        = var.neptune_engine_version
@@ -476,9 +451,20 @@ module "neptune" {
   deletion_protection   = var.neptune_deletion_protection
   skip_final_snapshot   = var.neptune_skip_final_snapshot
 
-  # The loader reads the CSVs module.ingestion's graph-load-start writes to its bucket.
-  create_bulk_load_role        = var.enable_ingestion
-  bulk_load_bucket_arn         = var.enable_ingestion ? module.ingestion.bucket_arn : ""
+  # The loader reads the CSVs the named workflows' graph-load-start steps write. Referenced by
+  # computed name rather than by each workflow's bucket_arns output: the bucket lives in the
+  # workflow's state, and reading it here would put the platform back into a dependency cycle with
+  # the thing that depends on this role. The name is a module contract, validated on the variable.
+  #
+  # Gated on the workflow being *enabled*, not merely named. The role is attached to the cluster via
+  # AddRoleToDBCluster, which validates it against permissions it cannot have while the graph-load
+  # bucket does not exist. enable_ingestion used to carry that enabled-ness; when var.workflows
+  # replaced it, keying on the name alone turned this on in every environment for the first time.
+  create_bulk_load_role = local.neptune_bulk_load_active
+  bulk_load_bucket_arns = [
+    for name in local.neptune_bulk_load_enabled_workflows :
+    "arn:aws:s3:::thor-${var.environment}-workflow-${name}-graphload-${var.account_id}"
+  ]
   iam_permissions_boundary_arn = local.iam_permissions_boundary_arn
 
   tags = var.tags
@@ -512,31 +498,6 @@ module "tenant_provisioning" {
   hosted_zone_id = module.route53[0].zone_ids[var.tenant_provisioning_base_domain]
   base_domain    = var.tenant_provisioning_base_domain
   dns_target     = var.tenant_provisioning_dns_target
-
-  tags = var.tags
-}
-
-# Expand-phase tenant schema migrations (migrations/tenant, run by .github/workflows/tenant-migrations.yml).
-module "tenant_migration" {
-  count = var.enable_tenant_migration ? 1 : 0
-
-  source = "./modules/tenant_migration"
-
-  environment                  = var.environment
-  account_id                   = var.account_id
-  aws_region                   = var.aws_region
-  vpc_id                       = local.vpc_id
-  private_subnet_ids           = local.private_subnet_ids
-  iam_permissions_boundary_arn = local.iam_permissions_boundary_arn
-
-  # The runner reads tenant routing from the Master DB and reaches every tenant DB through the
-  # proxy (tenant_routing.cluster_endpoint), so rds-db:connect is proxy-scoped.
-  db_host               = module.rds_proxy.endpoint
-  db_name               = module.aurora.database_name
-  rds_proxy_resource_id = module.rds_proxy.proxy_resource_id
-  master_db_app_user    = var.master_db_app_user
-
-  state_machine_definition_path = var.tenant_migration_asl_path
 
   tags = var.tags
 }

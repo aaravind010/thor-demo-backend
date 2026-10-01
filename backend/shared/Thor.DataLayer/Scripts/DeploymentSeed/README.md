@@ -12,5 +12,6 @@
 - **Scope:** the Lambda connects as `thor_master_seed`, a least-privilege IAM role (see
   `backend/functions/Thor.DbBootstrap/src/Thor.DbBootstrap.Function/db-roles.sql`) with
   `SELECT, INSERT, UPDATE` on `master.authentication_types`, `master.connector_config_fields`,
-  `master.authentication_fields`, `master.connector_types`, and `auth.api_scopes` only. A script
+  `master.authentication_fields`, `master.connector_types`,
+  `master.authentication_type_connector_types`, and `auth.api_scopes` only. A script
   targeting any other table needs that role's grants extended first.

@@ -47,10 +47,8 @@ resource "aws_security_group" "bootstrap" {
 
   tags = merge(var.tags, { Name = "${local.name_prefix}-sg" })
 
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
   lifecycle {
     create_before_destroy = true
-    ignore_changes        = [tags, tags_all]
   }
 }
 
@@ -66,11 +64,6 @@ resource "aws_vpc_security_group_ingress_rule" "bootstrap_to_aurora" {
   ip_protocol                  = "tcp"
 
   tags = merge(var.tags, { Name = "${local.name_prefix}-aurora-ingress" })
-
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
-  lifecycle {
-    ignore_changes = [tags, tags_all]
-  }
 }
 
 # --- IAM ---
@@ -89,22 +82,12 @@ resource "aws_iam_role" "bootstrap" {
   assume_role_policy   = data.aws_iam_policy_document.assume.json
   permissions_boundary = var.iam_permissions_boundary_arn
   tags                 = var.tags
-
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
-  lifecycle {
-    ignore_changes = [tags, tags_all]
-  }
 }
 
 resource "aws_cloudwatch_log_group" "bootstrap" {
   name              = "/aws/lambda/${local.name_prefix}"
   retention_in_days = 30
   tags              = var.tags
-
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
-  lifecycle {
-    ignore_changes = [tags, tags_all]
-  }
 }
 
 # Logs to own log group only + read the AWS-managed master secret + VPC ENI management (the ec2
@@ -168,11 +151,6 @@ resource "aws_lambda_function" "bootstrap" {
   depends_on = [aws_cloudwatch_log_group.bootstrap, aws_iam_role_policy.permissions]
 
   tags = var.tags
-
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
-  lifecycle {
-    ignore_changes = [tags, tags_all]
-  }
 }
 
 # Runs the bootstrap at apply. Re-invokes whenever the function code changes (source_code_hash

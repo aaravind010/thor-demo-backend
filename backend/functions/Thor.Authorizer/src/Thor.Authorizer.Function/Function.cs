@@ -30,10 +30,11 @@ public sealed class Function
     public async Task<APIGatewayCustomAuthorizerResponse> FunctionHandler(
         APIGatewayCustomAuthorizerRequest request, ILambdaContext context)
     {
-        var hostHeader = GetHeader(request.Headers, "Host");
+        // The tenant comes from the credential alone (see AuthorizerHandler) — Host and every
+        // other header are either not the tenant's behind CloudFront or caller-controlled.
         var authorizationHeader = GetHeader(request.Headers, "Authorization");
 
-        var policy = await _handler.HandleAsync(hostHeader, authorizationHeader, request.MethodArn, request.HttpMethod, request.Path);
+        var policy = await _handler.HandleAsync(authorizationHeader, request.MethodArn, request.HttpMethod, request.Path);
 
         return MapToApiGatewayResponse(policy);
     }

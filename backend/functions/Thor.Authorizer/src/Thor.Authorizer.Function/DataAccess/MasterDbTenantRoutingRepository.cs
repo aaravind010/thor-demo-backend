@@ -1,15 +1,16 @@
 using Microsoft.EntityFrameworkCore;
 using Thor.Authorizer.Core.DataAccess;
 using Thor.DataLayer.Data;
+using Thor.DataLayer.Models;
 
 namespace Thor.Authorizer.Function.DataAccess;
 
 /// <summary>
-/// Resolves a tenant's routing (by subdomain) from the Master DB over a direct, in-VPC
-/// connection through the RDS Proxy, authenticating with an RDS IAM token as the least-privilege
-/// read-only <c>thor_authorizer</c> role — no password, no RDS Data API. Reads only the two
-/// <c>auth</c> tables via <see cref="MasterDbContext"/>. Returns null on no match (the caller
-/// negative-caches), never throws for a missing tenant.
+/// Resolves a tenant's routing (by Cognito user pool id or tenant id) from the Master DB over a
+/// direct, in-VPC connection through the RDS Proxy, authenticating with an RDS IAM token as the
+/// least-privilege read-only <c>thor_authorizer</c> role — no password, no RDS Data API. Reads only
+/// <c>auth.tenant_routing</c> via <see cref="MasterDbContext"/>. Returns null on no match (the
+/// caller negative-caches), never throws for a missing tenant.
 /// </summary>
 /// <remarks>
 /// A fresh <see cref="MasterDbContext"/> is created and disposed per call: the factory mints a
@@ -28,25 +29,37 @@ public sealed class MasterDbTenantRoutingRepository : ITenantRoutingRepository
         _connectionInfo = connectionInfo;
     }
 
-    public async Task<TenantRoute?> GetBySubdomainAsync(string subdomain)
+    // user_pool_id is unique (IX_tenant_routing_user_pool_id), one pool per tenant (ADR §5).
+    public async Task<TenantRoute?> GetByUserPoolIdAsync(string userPoolId)
     {
         await using var context = _contextFactory.Create(_connectionInfo);
 
-        var tenant = await context.Tenants
+        var routing = await context.TenantRoutings
             .AsNoTracking()
-            .Include(t => t.Routing)
-            .FirstOrDefaultAsync(t => t.Subdomain == subdomain);
+            .SingleOrDefaultAsync(r => r.UserPoolId == userPoolId);
 
-        if (tenant?.Routing is null)
+        return routing is null ? null : ToRoute(routing);
+    }
+
+    public async Task<TenantRoute?> GetByTenantIdAsync(string tenantId)
+    {
+        if (!Guid.TryParse(tenantId, out var id))
         {
             return null;
         }
 
-        return new TenantRoute(
-            TenantId: tenant.TenantId.ToString(),
-            Subdomain: tenant.Subdomain,
-            UserPoolId: tenant.Routing.UserPoolId,
-            AppClientId: tenant.Routing.AppClientId,
-            Region: tenant.Routing.Region);
+        await using var context = _contextFactory.Create(_connectionInfo);
+
+        var routing = await context.TenantRoutings
+            .AsNoTracking()
+            .SingleOrDefaultAsync(r => r.TenantId == id);
+
+        return routing is null ? null : ToRoute(routing);
     }
+
+    private static TenantRoute ToRoute(TenantRouting routing) => new(
+        TenantId: routing.TenantId.ToString(),
+        UserPoolId: routing.UserPoolId,
+        AppClientId: routing.AppClientId,
+        Region: routing.Region);
 }

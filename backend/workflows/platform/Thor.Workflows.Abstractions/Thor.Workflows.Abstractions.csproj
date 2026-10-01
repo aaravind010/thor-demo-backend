@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Contracts only. No Thor.DataLayer, no AWS SDK, no Lambda runtime — those live in
+    Thor.Workflows.Hosting. Keeping this assembly dependency-free is the point: it was the
+    Thor.DataLayer reference here that made Thor.Workflows.IngestionDriver decline to reference
+    Abstractions at all, which is how TenantConnectionManagerFactory ended up duplicated.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <RootNamespace>Thor.Workflows.Abstractions</RootNamespace>
+    <AssemblyName>Thor.Workflows.Abstractions</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Thor.Workflows.Abstractions.Tests" />
+  </ItemGroup>
+
+</Project>

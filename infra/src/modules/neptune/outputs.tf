@@ -29,6 +29,6 @@ output "security_group_id" {
 }
 
 output "bulk_load_role_arn" {
-  description = "The cluster-attached role a loader job names as iamRoleArn — modules/ingestion hands it to graph-load-start as THOR_GRAPH_BULKLOAD_IAM_ROLE_ARN. \"\" when create_bulk_load_role is off."
+  description = "The cluster-attached role a loader job names as iamRoleArn — the root hands it to the workflow's graph-load-start step as THOR_GRAPH_BULKLOAD_IAM_ROLE_ARN. \"\" when create_bulk_load_role is off."
   value       = var.create_bulk_load_role ? aws_iam_role.bulk_load[0].arn : ""
 }

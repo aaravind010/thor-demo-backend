@@ -1,6 +1,7 @@
--- Seeds the connector-agnostic authentication schemes (master.authentication_types).
-INSERT INTO master.authentication_types (id, name, connector_type)
-SELECT gen_random_uuid(), v.name, 'generic'
+-- Seeds the authentication schemes (master.authentication_types). Which connectors each scheme
+-- may be used with is seeded separately in 005_seed_authentication_type_connector_types.sql.
+INSERT INTO master.authentication_types (id, name)
+SELECT gen_random_uuid(), v.name
 FROM (VALUES
     ('API Key'),
     ('OAuth 2.0 Client Credentials'),

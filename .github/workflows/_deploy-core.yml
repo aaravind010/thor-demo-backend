@@ -30,11 +30,6 @@ on:
         required: false
         type: number
         default: 30
-      changed_services:
-        description: "Comma-separated services also getting their own deploy job this run (e.g. \"task-api,intelligence-engine,\"). Blank means only this one service is deploying, so ecs-deploy syncs both siblings normally."
-        required: false
-        type: string
-        default: ""
     outputs:
       digest:
         description: "Digest actually deployed for this service/environment. Blank if this call's stage didn't run or (for qa) wasn't approved."
@@ -54,6 +49,9 @@ jobs:
     if: inputs.environment == 'dev'
     runs-on: ubuntu-latest
     environment: dev
+    # Must exceed inputs.timeout_minutes (default 30, the ECS stabilize poll) plus build and push time.
+    # Without this the only bound on a hung `aws` call is GitHub's 6-hour job cap.
+    timeout-minutes: 60
     defaults:
       run:
         # inputs.service is the Terraform/ECS service key (thor-api/task-api/intelligence-engine); the actual
@@ -69,6 +67,15 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      # global-json-file rather than a hardcoded version: global.json pins 10.0.300 with
+      # rollForward: latestFeature, which rolls forward within the 10.0.3xx band but never backward.
+      # Relying on whatever SDK the runner image happens to ship silently breaks the day it drifts
+      # below that floor.
+      - uses: actions/setup-dotnet@v4
+        if: inputs.service != 'intelligence-engine'
+        with:
+          global-json-file: global.json
 
       - uses: ./.github/actions/ecr-login
         id: ecr
@@ -89,22 +96,14 @@ jobs:
           echo "jfrog_uri=${{ steps.jfrog.outputs.registry }}/${{ vars.JFROG_DOCKER_REPOSITORY }}/${{ inputs.service }}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
           echo "ecr_uri=${{ steps.ecr.outputs.registry }}/${{ inputs.service }}-dev:${{ github.sha }}" >> "$GITHUB_OUTPUT"
 
+      # Build only. Tests are test.yml's job — it runs every project in the repo and blocks, whereas
+      # the step that used to be here was continue-on-error and used a glob that matched almost none
+      # of them. Running them again on the deploy path would only re-assert what the PR already proved.
       - name: Restore & build (.NET)
         if: inputs.service != 'intelligence-engine'
         run: |
           dotnet restore
           dotnet build --no-restore -c Release -p:OpenApiGenerateDocumentsOnBuild=false
-
-      # continue-on-error: fast feedback, not a gate.
-      - name: Run unit tests (.NET)
-        if: inputs.service != 'intelligence-engine'
-        continue-on-error: true
-        run: |
-          if find . -iname '*.test.csproj' | grep -q .; then
-            dotnet test --no-build -c Release
-          else
-            echo "No test project found, skipping."
-          fi
 
       - name: Install uv (Python)
         if: inputs.service == 'intelligence-engine'
@@ -117,16 +116,6 @@ jobs:
       - name: Generate gRPC stubs (Python)
         if: inputs.service == 'intelligence-engine'
         run: uv run python scripts/generate_grpc.py
-
-      - name: Run unit tests (Python)
-        if: inputs.service == 'intelligence-engine'
-        continue-on-error: true
-        run: |
-          if [ -d tests ] || ls test_*.py >/dev/null 2>&1; then
-            uv run pytest
-          else
-            echo "No tests found, skipping."
-          fi
 
       # Build context is the repo root, not the service folder: every service reaches outside
       # its own directory (backend/shared/** project references, the shared proto/ contract),
@@ -163,12 +152,12 @@ jobs:
           service: ${{ inputs.service }}
           image_uri: ${{ steps.image.outputs.ecr_uri }}
           timeout_minutes: ${{ inputs.timeout_minutes }}
-          changed_services: ${{ inputs.changed_services }}
 
   qa-deploy:
     if: inputs.environment == 'qa'
     runs-on: ubuntu-latest
     environment: qa-candidate
+    timeout-minutes: 60
     outputs:
       digest: ${{ steps.manifest.outputs.digest }}
       tag: ${{ steps.manifest.outputs.tag }}
@@ -238,7 +227,6 @@ jobs:
           service: ${{ inputs.service }}
           image_uri: ${{ steps.image.outputs.candidate_uri }}
           timeout_minutes: ${{ inputs.timeout_minutes }}
-          changed_services: ${{ inputs.changed_services }}
 
       # Stub — see deployment_strategy_plan.md §8. Always passes for now.
       - name: Run integration tests against candidate
@@ -259,32 +247,34 @@ jobs:
     if: inputs.environment == 'qa' && needs['qa-deploy'].result == 'success'
     runs-on: ubuntu-latest
     environment: qa
+    # The approval wait itself is not counted against this — the timer starts once the job is released.
+    timeout-minutes: 10
     outputs:
       # Re-exported so this workflow's own output stays blank until qa-promote (the approval-gated job) completes, not just qa-deploy.
       digest: ${{ needs['qa-deploy'].outputs.digest }}
       commit_id: ${{ needs['qa-deploy'].outputs.tag }}
 
+    # This job's entire purpose is the `environment: qa` gate above it. It used to also retag the
+    # qa ECR image from `candidate-<tag>` to `<tag>`, which was removed: nothing consumed the
+    # verified tag. qa's own ECS service runs the `candidate-` URI that qa-deploy deployed, prod
+    # resolves `.qa.digest` from deploy/<service>/image.json and pulls that digest from JFrog, and
+    # Terraform pins `<repo>:latest`. So the retag pulled and pushed a full image through a
+    # cold-cache runner to produce a tag with no readers.
+    #
+    # What *is* load-bearing is the job boundary. This workflow's `digest` output stays blank until
+    # this job completes, so deploy.yml's write-manifests cannot record a qa digest — and prod
+    # cannot promote it — until a reviewer has approved.
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: ./.github/actions/ecr-login
-        id: ecr
-        with:
-          role_arn: ${{ inputs.environment == 'dev' && vars.DEV_AWS_ROLE_ARN || inputs.environment == 'qa' && vars.QA_AWS_ROLE_ARN || inputs.environment == 'prod' && vars.PROD_AWS_ROLE_ARN }}
-          region: ${{ inputs.environment == 'dev' && vars.DEV_AWS_REGION || inputs.environment == 'qa' && vars.QA_AWS_REGION || inputs.environment == 'prod' && vars.PROD_AWS_REGION }}
-
-      - name: Promote tested candidate to the verified tag
+      - name: Record approval
         run: |
-          CANDIDATE_URI="${{ steps.ecr.outputs.registry }}/${{ inputs.service }}-qa:candidate-${{ needs['qa-deploy'].outputs.tag }}"
-          VERIFIED_URI="${{ steps.ecr.outputs.registry }}/${{ inputs.service }}-qa:${{ needs['qa-deploy'].outputs.tag }}"
-          docker pull "${CANDIDATE_URI}"
-          docker tag "${CANDIDATE_URI}" "${VERIFIED_URI}"
-          docker push "${VERIFIED_URI}"
+          echo "qa approved ${{ inputs.service }} @ ${{ needs['qa-deploy'].outputs.digest }}"
+          echo "Recording it in deploy/${{ inputs.service }}/image.json is deploy.yml's write-manifests job."
 
   prod-deploy:
     if: inputs.environment == 'prod'
     runs-on: ubuntu-latest
     environment: prod
+    timeout-minutes: 60
     outputs:
       digest: ${{ steps.manifest.outputs.digest }}
       commit_id: ${{ steps.manifest.outputs.tag }}
@@ -339,4 +329,51 @@ jobs:
           service: ${{ inputs.service }}
           image_uri: ${{ steps.image.outputs.uri }}
           timeout_minutes: ${{ inputs.timeout_minutes }}
-          changed_services: ${{ inputs.changed_services }}
+
+  # Writes deploy/<service>/image.json. This lives here rather than in the caller so that several
+  # services can share one matrix deploy job: a matrix job publishes a single `outputs` object, so a
+  # caller cannot ask each entry what it produced. Each invocation recording its own result removes
+  # the question. manifest-write merges into this environment's key only and retries on a conflicting
+  # write, so concurrent services writing their own files do not interfere.
+  #
+  # Gated on the deploying job's `result`, not merely on a non-empty digest. dev-deploy sets `digest`
+  # as soon as it has pushed to JFrog — several steps before ecs-deploy has confirmed the service is
+  # healthy — and job outputs are published even when the job later fails. Without the result check,
+  # a deploy that published an image and then failed to roll out would still be recorded as this
+  # environment's deployed version, and qa would promote it.
+  record:
+    needs: [dev-deploy, qa-promote, prod-deploy]
+    if: >-
+      !cancelled() && (
+        needs['dev-deploy'].result == 'success' ||
+        needs['qa-promote'].result == 'success' ||
+        needs['prod-deploy'].result == 'success'
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Narrower than the workflow default on purpose: only this job writes to the repository, so the
+    # build and deploy jobs keep contents: read. Job-level permissions replace rather than extend the
+    # workflow-level block, and nothing here needs id-token.
+    permissions:
+      contents: write
+    steps:
+      # Exactly one of the three ran, so || selects it.
+      - id: resolve
+        run: |
+          {
+            echo "digest=${{ needs['dev-deploy'].outputs.digest || needs['qa-promote'].outputs.digest || needs['prod-deploy'].outputs.digest }}"
+            echo "commit_id=${{ needs['dev-deploy'].outputs.commit_id || needs['qa-promote'].outputs.commit_id || needs['prod-deploy'].outputs.commit_id }}"
+          } >> "$GITHUB_OUTPUT"
+
+      # uses: ./local/path needs the repo checked out to resolve the action.
+      - uses: actions/checkout@v4
+        if: steps.resolve.outputs.digest != ''
+
+      - uses: ./.github/actions/manifest-write
+        if: steps.resolve.outputs.digest != ''
+        with:
+          service: ${{ inputs.service }}
+          environment: ${{ inputs.environment }}
+          digest: ${{ steps.resolve.outputs.digest }}
+          commit_id: ${{ steps.resolve.outputs.commit_id }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}

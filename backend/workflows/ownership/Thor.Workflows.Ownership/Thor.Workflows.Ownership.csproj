@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Thor.Workflows.Ownership</RootNamespace>
+    <AssemblyName>Thor.Workflows.Ownership</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\platform\Thor.Workflows.Abstractions\Thor.Workflows.Abstractions.csproj" />
+    <ProjectReference Include="..\..\platform\Thor.Workflows.Hosting\Thor.Workflows.Hosting.csproj" />
+    <ProjectReference Include="..\..\..\shared\Thor.DataLayer\Thor.DataLayer.csproj" />
+    <ProjectReference Include="..\..\..\shared\Thor.DataConnectionManager\Thor.DataConnectionManager.csproj" />
+    <ProjectReference Include="..\..\..\shared\Thor.Rules\Thor.Rules.csproj" />
+    <ProjectReference Include="..\..\..\shared\Thor.S3\Thor.S3.csproj" />
+    <ProjectReference Include="..\..\..\shared\Thor.Graph\Thor.Graph.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Thor.Workflows.Ownership.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.4" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.4" />
+    <PackageReference Include="AWSSDK.S3" Version="4.0.5" />
+  </ItemGroup>
+
+</Project>

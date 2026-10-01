@@ -1,0 +1,18 @@
+{
+  "connector": "ActiveDirectory",
+  "entityKind": "Group",
+  "columnMappings": {
+    "display_name": "displayName",
+    "email": "mail"
+  },
+  "hashFields": [
+    "connector_type",
+    "native_id",
+    "group_class",
+    "display_name",
+    "email",
+    "domain_name",
+    "is_deleted",
+    "edge_refs"
+  ]
+}

@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Thor.Workflows.Atre</RootNamespace>
+    <AssemblyName>Thor.Workflows.Atre</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\platform\Thor.Workflows.Abstractions\Thor.Workflows.Abstractions.csproj" />
+    <ProjectReference Include="..\..\platform\Thor.Workflows.Hosting\Thor.Workflows.Hosting.csproj" />
+    <ProjectReference Include="..\..\..\shared\Thor.DataLayer\Thor.DataLayer.csproj" />
+    <ProjectReference Include="..\..\..\shared\Thor.DataConnectionManager\Thor.DataConnectionManager.csproj" />
+    <ProjectReference Include="..\..\..\shared\Thor.Rules\Thor.Rules.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Thor.Workflows.Atre.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.4" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.4" />
+  </ItemGroup>
+
+</Project>

@@ -1,9 +1,9 @@
 {
   "service": "intelligence-engine",
   "dev": {
-    "digest": "sphereco.jfrog.io/thor-docker-local/intelligence-engine@sha256:11ae151ab11eb9296f8f3f5662518dea08dd1f84545deb33f66bb7d995c6d53d",
-    "commitId": "a6b08700170ca8b480aa8d563254d83296492011",
-    "deployedAt": "2026-09-22T05:16:56Z"
+    "digest": "sphereco.jfrog.io/thor-docker-local/intelligence-engine@sha256:e520d465d0c5aa2ae4325190e9aecbc999c00766d8b9bf445950ba07e3b05957",
+    "commitId": "4bcef712d83a315d9289d74b4cb1c141fedacc79",
+    "deployedAt": "2026-09-25T14:55:27Z"
   },
   "qa": {
     "digest": "",

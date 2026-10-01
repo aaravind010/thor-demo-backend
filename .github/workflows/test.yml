@@ -1,0 +1,115 @@
+name: Test
+
+# The repo's only blocking test gate.
+#
+# Replaces the per-service test steps that used to live in deploy-preview.yml and _deploy-core.yml.
+# Those were scoped to whichever service a path filter matched, so anything under backend/functions/,
+# backend/shared/ or backend/workflows/ was never tested by any workflow; and they discovered projects
+# with `find -iname '*.test.csproj'`, which does not match `*.Tests.csproj`, so most of what they did
+# cover was skipped silently. They were also `continue-on-error: true`, so nothing was ever asserted.
+#
+# This runs everything, everywhere, and fails the run. It deliberately does not use a path filter:
+# backend/shared/** is referenced by nearly every project, so "which tests could this change break"
+# is not a question a filter answers cheaply or safely.
+#
+# Runs once per commit, on the pull request. deploy.yml used to call this again on push, which
+# re-ran the whole suite against the same tree the PR had just tested.
+#
+# IMPORTANT: this only *blocks* anything once `test / dotnet` and `test / python` are required status
+# checks on dev/qa/main in the repository's branch-protection settings. That is now the only gate —
+# deploy.yml no longer waits on a test result, so an unblocked red PR merges and deploys. Direct
+# pushes to those branches run no tests at all, for the same reason.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [dev, qa, main]
+
+permissions:
+  contents: read
+
+# Superseding a run is safe: pull_request is the only trigger, so a new push to the PR branch makes
+# the in-flight run's result obsolete anyway. A cancelled run is not "success", so it cannot satisfy
+# a required status check.
+concurrency:
+  group: test-pr-${{ github.event.number }}
+  cancel-in-progress: true
+
+jobs:
+  dotnet:
+    runs-on: ubuntu-latest
+    # Two suites spin up Postgres via Testcontainers, and each project restores separately.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      # Both suffixes are in use: backend/workflows/ uses `.Tests.csproj`, everything else `.Test.csproj`.
+      # There is no repo-wide solution file to point at, and the per-module .slnx files overlap on the
+      # shared projects, so discovery is by project rather than by solution.
+      - name: Discover test projects
+        id: discover
+        run: |
+          set -euo pipefail
+          mapfile -t PROJECTS < <(find backend \( -name '*.Test.csproj' -o -name '*.Tests.csproj' \) | sort)
+          if [ "${#PROJECTS[@]}" -eq 0 ]; then
+            echo "::error::No test projects found — discovery is broken, not the repo." >&2
+            exit 1
+          fi
+          printf 'Found %s test project(s):\n' "${#PROJECTS[@]}"
+          printf '  %s\n' "${PROJECTS[@]}"
+          printf '%s\n' "${PROJECTS[@]}" > /tmp/test-projects.txt
+
+      # Run each project separately rather than building a throwaway solution: a solution would need
+      # every project to agree on a target framework and restore cleanly together, and one bad project
+      # would take out the whole run. Per-project keeps the failure attributable.
+      #
+      # Several suites (Thor.Workflows.Ingestion.Tests, Thor.Workflows.Abstractions.Tests) use
+      # Testcontainers and need a Docker daemon — ubuntu-latest provides one.
+      #
+      # OpenApiGenerateDocumentsOnBuild=false is required, not cosmetic: building Thor.Api runs the
+      # OpenAPI document generator, which executes the app's entry point. Program.cs throws on the
+      # first unset THOR_* variable, so the generator fails and takes the *build* down before any
+      # test runs. The deploy and preview build steps already pass this for the same reason.
+      - name: Run tests
+        run: |
+          set -uo pipefail
+          FAILED=()
+          while IFS= read -r PROJECT; do
+            echo "::group::${PROJECT}"
+            if dotnet test "$PROJECT" -c Release -p:OpenApiGenerateDocumentsOnBuild=false --logger 'console;verbosity=normal'; then
+              echo "PASS  ${PROJECT}"
+            else
+              echo "::error file=${PROJECT}::Tests failed"
+              FAILED+=("$PROJECT")
+            fi
+            echo "::endgroup::"
+          done < /tmp/test-projects.txt
+
+          if [ "${#FAILED[@]}" -gt 0 ]; then
+            echo "::error::${#FAILED[@]} test project(s) failed:"
+            printf '  %s\n' "${FAILED[@]}"
+            exit 1
+          fi
+          echo "All test projects passed."
+
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend/services/Thor.IntelligenceEngine
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
+      - run: uv sync --frozen
+
+      # The gRPC stubs are generated at build time from proto/, so they must exist before pytest imports them.
+      - run: uv run python scripts/generate_grpc.py
+
+      - run: uv run pytest

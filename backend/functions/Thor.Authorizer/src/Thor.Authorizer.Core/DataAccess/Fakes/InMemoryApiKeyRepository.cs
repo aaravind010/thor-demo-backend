@@ -2,22 +2,22 @@ namespace Thor.Authorizer.Core.DataAccess.Fakes;
 
 public sealed class InMemoryApiKeyRepository : IApiKeyRepository
 {
-    private readonly Dictionary<(string TenantId, string KeyId), ApiKeyRecord> _keys;
-    private readonly Dictionary<(string TenantId, string KeyId), IReadOnlyList<ApiScope>> _scopes;
+    private readonly Dictionary<string, ApiKeyRecord> _keys;
+    private readonly Dictionary<string, IReadOnlyList<ApiScope>> _scopes;
 
     public InMemoryApiKeyRepository(
         IEnumerable<ApiKeyRecord> seedKeys,
-        IReadOnlyDictionary<(string TenantId, string KeyId), IReadOnlyList<ApiScope>>? seedScopes = null)
+        IReadOnlyDictionary<string, IReadOnlyList<ApiScope>>? seedScopes = null)
     {
-        _keys = seedKeys.ToDictionary(k => (k.TenantId, k.KeyId));
+        _keys = seedKeys.ToDictionary(k => k.KeyId);
         _scopes = seedScopes is null
-            ? new Dictionary<(string, string), IReadOnlyList<ApiScope>>()
-            : new Dictionary<(string, string), IReadOnlyList<ApiScope>>(seedScopes);
+            ? new Dictionary<string, IReadOnlyList<ApiScope>>()
+            : new Dictionary<string, IReadOnlyList<ApiScope>>(seedScopes);
     }
 
-    public Task<ApiKeyRecord?> GetByKeyIdAsync(string tenantId, string keyId) =>
-        Task.FromResult(_keys.GetValueOrDefault((tenantId, keyId)));
+    public Task<ApiKeyRecord?> GetByKeyIdAsync(string keyId) =>
+        Task.FromResult(_keys.GetValueOrDefault(keyId));
 
-    public Task<IReadOnlyList<ApiScope>> GetScopesForKeyAsync(string tenantId, string keyId) =>
-        Task.FromResult(_scopes.GetValueOrDefault((tenantId, keyId), Array.Empty<ApiScope>()));
+    public Task<IReadOnlyList<ApiScope>> GetScopesForKeyAsync(string keyId) =>
+        Task.FromResult(_scopes.GetValueOrDefault(keyId, Array.Empty<ApiScope>()));
 }

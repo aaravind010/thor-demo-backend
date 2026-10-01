@@ -6,6 +6,11 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 6.0"
     }
+    # Only for time_sleep.bulk_load_role_propagation below.
+    time = {
+      source  = "hashicorp/time"
+      version = "~> 0.12"
+    }
   }
 }
 
@@ -42,6 +47,19 @@ resource "aws_security_group" "neptune" {
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = [var.vpc_cidr]
+  }
+
+  # S3's IP range isn't part of vpc_cidr, so the rule above doesn't cover it — bulk loads read
+  # CSVs from S3 via the gateway endpoint, which needs its own, separately-scoped egress rule.
+  dynamic "egress" {
+    for_each = var.s3_prefix_list_id != "" ? [var.s3_prefix_list_id] : []
+    content {
+      description     = "S3 gateway endpoint (bulk load reads CSVs from S3)"
+      from_port       = 443
+      to_port         = 443
+      protocol        = "tcp"
+      prefix_list_ids = [egress.value]
+    }
   }
 
   tags = merge(var.tags, {
@@ -113,7 +131,7 @@ data "aws_iam_policy_document" "bulk_load_permissions" {
 
   statement {
     actions   = ["s3:GetObject", "s3:ListBucket"]
-    resources = [var.bulk_load_bucket_arn, "${var.bulk_load_bucket_arn}/*"]
+    resources = concat(var.bulk_load_bucket_arns, [for arn in var.bulk_load_bucket_arns : "${arn}/*"])
   }
 }
 
@@ -123,6 +141,23 @@ resource "aws_iam_role_policy" "bulk_load" {
   name   = "${local.name_prefix}-bulk-load-permissions"
   role   = aws_iam_role.bulk_load[0].id
   policy = data.aws_iam_policy_document.bulk_load_permissions[0].json
+}
+
+# IAM is eventually consistent, and AddRoleToDBCluster validates the role at attach time. A role
+# created seconds earlier is rejected with InvalidParameterValue on AWS_ROLE_INTEGRATION even though
+# its trust policy, inline policy and permissions boundary are all correct — verified by
+# simulate-principal-policy against the live role, which returned allowed for both S3 actions while
+# the attach was still failing. Re-running the same apply minutes later succeeds unchanged.
+#
+# This is a sleep because there is nothing better to wait on. The attach is an argument on
+# aws_neptune_cluster, not its own resource: the provider has aws_rds_cluster_role_association but no
+# aws_neptune_cluster_role_association, so a failed attach fails the cluster and halts the rest of
+# the apply. Only the first apply in an environment pays the wait — time_sleep persists in state.
+resource "time_sleep" "bulk_load_role_propagation" {
+  count = var.create_bulk_load_role ? 1 : 0
+
+  depends_on      = [aws_iam_role_policy.bulk_load]
+  create_duration = "60s"
 }
 
 # iam_database_authentication_enabled, no master-password secret — Neptune uses SigV4/IAM DB auth
@@ -154,6 +189,12 @@ resource "aws_neptune_cluster" "neptune" {
   tags = merge(var.tags, {
     Name = local.name_prefix
   })
+
+  # Two reasons, and the second is the one that actually bit. iam_roles references the role but not
+  # its inline policy, so ordering them is necessary but not sufficient: even fully policied, a
+  # freshly created role is rejected by AddRoleToDBCluster until IAM propagates. time_sleep supplies
+  # the wait and already depends on the policy, so this single edge covers both.
+  depends_on = [time_sleep.bulk_load_role_propagation]
 
   # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
   lifecycle {

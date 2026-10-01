@@ -1,4 +1,5 @@
 using Amazon.S3;
+using Amazon.SecretsManager;
 using Asp.Versioning;
 using DotNetEnv;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
@@ -16,6 +17,7 @@ using Thor.TaskApi.Constants;
 using Thor.TaskApi.Middleware;
 using Thor.Core.Logging;
 using Thor.TaskApi.Services;
+using static Thor.TaskApi.Utils.EnvironmentVariableHelper;
 
 Env.Load();
 
@@ -87,7 +89,7 @@ try
         Username: Environment.GetEnvironmentVariable("THOR_MASTERDB_USER")!,
         Region: Environment.GetEnvironmentVariable("THOR_MASTERDB_REGION")!,
         Port: int.Parse(Environment.GetEnvironmentVariable("THOR_MASTERDB_PORT")!),
-        UseSsl: false));
+        UseSsl: true));
 
     // RDS IAM auth token minting (ADR §6.2/§6.3) — required by MasterDbContextFactory;
     // there is no password auth path.
@@ -115,7 +117,29 @@ try
     builder.Services.AddSingleton<ITokenValidator>(_ => new ThorTokenValidator(
         Environment.GetEnvironmentVariable("THOR_TASKAPI_JWT_PUBLIC_KEY")!));
 
+    // No fallback (see EnvironmentVariableHelper.RequireEnvironmentVariable) — the stall timeout and
+    // max-retry count for reclaiming stalled ScanTasks (GET /task) are operational decisions, not
+    // defaults to guess.
+    builder.Services.AddSingleton(new ScanTaskReclaimOptions(
+        StallTimeout: TimeSpan.FromSeconds(int.Parse(RequireEnvironmentVariable("THOR_TASKAPI_SCAN_TASK_STALL_TIMEOUT_SECONDS"))),
+        MaxRetries: int.Parse(RequireEnvironmentVariable("THOR_TASKAPI_SCAN_TASK_MAX_RETRIES"))
+    ));
+
+    // Reads the authentication secrets Thor.Api's AuthenticationSecretWriter stores in Secrets Manager.
+    // Secrets Manager is real AWS infra with no local emulator in this repo; in Development, swap in
+    // a stand-in that fails loudly (see LocalAuthenticationSecretReader).
+    if (builder.Environment.IsDevelopment())
+    {
+        builder.Services.AddSingleton<IAuthenticationSecretReader, LocalAuthenticationSecretReader>();
+    }
+    else
+    {
+        builder.Services.AddSingleton<IAmazonSecretsManager>(_ => new AmazonSecretsManagerClient());
+        builder.Services.AddSingleton<IAuthenticationSecretReader, AuthenticationSecretReader>();
+    }
+
     builder.Services.AddScoped<UploadService>();
+    builder.Services.AddScoped<TaskService>();
 
     var app = builder.Build();
 

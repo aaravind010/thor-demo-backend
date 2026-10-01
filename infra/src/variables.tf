@@ -53,10 +53,33 @@ variable "enable_compute" {
   default     = true
 }
 
-variable "enable_ingestion" {
-  type        = bool
-  description = "Whether to create the ingestion pipeline (S3 -> SQS -> EventBridge Pipe -> CreateManifest Lambda -> Step Functions -> ECS ingestion task, see modules/ingestion). The ECR repo is created regardless of this flag, so an image can be pushed before turning it on — everything else stays off until deliberately enabled."
-  default     = false
+variable "workflows" {
+  type = map(object({
+    enabled = optional(bool, false)
+
+    # Per-environment dials for a workflow that has any, read by name in workflow_definitions.tf.
+    # Deliberately untyped strings rather than a schema per workflow: what is tunable differs per
+    # workflow, and the alternative is a growing object type in this file that only one entry ever
+    # uses. A name nothing reads is silently ignored, which is the cost of that choice.
+    settings = optional(map(string), {})
+  }))
+  description = "Workflows this environment hosts, keyed by name. Each must have a matching entry in local.workflow_definitions (workflow_definitions.tf), which is where its steps, buckets and trigger live. The ECR repository and security group are created regardless of `enabled`, because an image has to be pushable before the compute that runs it exists, and rds_proxy/neptune build their ingress rules from the security group."
+  default     = {}
+}
+
+variable "neptune_bulk_load_workflows" {
+  type        = list(string)
+  description = "Workflows whose graph-load buckets Neptune's bulk loader may read — each one that bulk-loads the graph (ingestion its entities, ownership its OWNED_BY edges). Empty for none. Named rather than referenced: the workflows already read Neptune's loader role ARN, so having Neptune read their bucket ARNs back would close a loop between the modules. Building the ARNs from modules/workflow's naming rule keeps the dependency one-way."
+  default     = []
+
+  # Because the bucket ARN is built from the naming rule rather than read from the workflow's output,
+  # nothing else catches a name matching no workflow: Terraform would build an ARN for a bucket
+  # nobody creates and the first failure would be a loader job at runtime. A validation rather than a
+  # check block — check assertions only warn, and plan still exits 0.
+  validation {
+    condition     = alltrue([for name in var.neptune_bulk_load_workflows : contains(keys(var.workflows), name)])
+    error_message = "Every neptune_bulk_load_workflows entry must name an entry in var.workflows."
+  }
 }
 
 variable "services" {
@@ -154,12 +177,7 @@ variable "authorizer_source_dir" {
 
 variable "create_manifest_source_dir" {
   type        = string
-  description = "Absolute path to CreateManifest's dotnet publish output"
-}
-
-variable "ingestion_driver_source_dir" {
-  type        = string
-  description = "Absolute path to Thor.Workflows.IngestionDriver's dotnet publish output"
+  description = "Absolute path to CreateManifest's dotnet publish output. It is the ingestion workflow's S3 trigger handler — still a zip Lambda, since it runs before an execution exists."
 }
 
 variable "secrets_recovery_window_in_days" {
@@ -396,20 +414,6 @@ variable "tenant_provisioning_dns_target" {
   type        = string
   default     = ""
   description = "DNS target (CNAME value) each tenant subdomain record points at — typically the public API/CloudFront hostname. Required when enable_tenant_provisioning is true."
-}
-
-# --- tenant schema migrations (Step Functions + ECS, module.tenant_migration) ---
-
-variable "enable_tenant_migration" {
-  type        = bool
-  default     = false
-  description = "Whether to create the tenant-migration bucket, runner ECR/ECS and state machine. deploy.yml gates every service deploy on tenant-migrations.yml, which needs these to exist in the target environment."
-}
-
-variable "tenant_migration_asl_path" {
-  type        = string
-  default     = ""
-  description = "Absolute path to migrations/tenant/statemachine/tenant-migration.asl.json. Required when enable_tenant_migration is true."
 }
 
 # --- master db seed (in-VPC Lambda that writes deployment seed data via IAM through the RDS Proxy) ---

@@ -8,8 +8,8 @@
 -- sync if you change either. authentication_fields.type_id has a real FK to
 -- authentication_types (ON DELETE CASCADE), both within this same database.
 --
--- Run 00_connector_types.sql first — authentication_types.connector_type_id is a real FK
--- to master.connector_types.id (same database).
+-- Run 00_connector_types.sql first — authentication_type_connector_types.connector_type_id
+-- is a real FK to master.connector_types.id (same database).
 --
 -- Run before 02_authentication_method_tenant.sql: that script references these ids and
 -- will leave a dangling cross-database reference if this script hasn't run yet (there is
@@ -22,11 +22,18 @@
 -- Edit the VALUES rows below to match the connector types/fields you actually need;
 -- these are placeholder examples. Safe to re-run (ON CONFLICT DO NOTHING).
 
-INSERT INTO master.authentication_types (id, name, connector_type_id)
+INSERT INTO master.authentication_types (id, name)
 VALUES
-    ('a1a1a1a1-0001-4000-8000-000000000001', 'Active Directory Service Account', 0),
-    ('a1a1a1a1-0001-4000-8000-000000000002', 'Microsoft 365 App Registration', 1)
+    ('a1a1a1a1-0001-4000-8000-000000000001', 'Active Directory Service Account'),
+    ('a1a1a1a1-0001-4000-8000-000000000002', 'Microsoft 365 App Registration')
 ON CONFLICT (id) DO NOTHING;
+
+-- Which connector each authentication type may be used with (a type can map to many).
+INSERT INTO master.authentication_type_connector_types (authentication_type_id, connector_type_id)
+VALUES
+    ('a1a1a1a1-0001-4000-8000-000000000001', 0),
+    ('a1a1a1a1-0001-4000-8000-000000000002', 1)
+ON CONFLICT (authentication_type_id, connector_type_id) DO NOTHING;
 
 INSERT INTO master.authentication_fields (id, type_id, name, description)
 VALUES

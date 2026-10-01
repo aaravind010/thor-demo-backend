@@ -1,6 +1,17 @@
+using System.Net;
 using System.Net.Http.Json;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Thor.Graph.BulkLoad;
+
+/// <summary>Thrown when Neptune's bulk loader REST API returns a non-success response, carrying the raw status/body so callers can persist or inspect the actual AWS error instead of a generic HTTP exception.</summary>
+public sealed class NeptuneBulkLoadException(HttpStatusCode statusCode, string responseBody)
+    : Exception($"Neptune bulk loader returned {(int)statusCode}: {responseBody}")
+{
+    public HttpStatusCode StatusCode { get; } = statusCode;
+    public string ResponseBody { get; } = responseBody;
+}
 
 /// <summary>
 /// Calls Neptune's bulk loader REST API directly over HTTPS/HTTP, with every call signed via
@@ -14,20 +25,23 @@ public sealed class NeptuneBulkLoaderClient : INeptuneBulkLoaderClient, IDisposa
 {
     private readonly HttpClient _http;
     private readonly bool _ownsClient;
+    private readonly ILogger _logger;
 
-    public NeptuneBulkLoaderClient(NeptuneOptions options)
+    public NeptuneBulkLoaderClient(NeptuneOptions options, ILoggerFactory? loggerFactory = null)
     {
         var scheme = options.EnableSsl ? "https" : "http";
         var signingHandler = new SigV4SigningHandler(options.Region) { InnerHandler = new HttpClientHandler() };
         _http = new HttpClient(signingHandler) { BaseAddress = new Uri($"{scheme}://{options.Endpoint}:{options.Port}/") };
         _ownsClient = true;
+        _logger = (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger<NeptuneBulkLoaderClient>();
     }
 
     /// <summary>Test seam — lets tests substitute a fake handler instead of a real Neptune endpoint.</summary>
-    internal NeptuneBulkLoaderClient(HttpClient httpClient)
+    internal NeptuneBulkLoaderClient(HttpClient httpClient, ILoggerFactory? loggerFactory = null)
     {
         _http = httpClient;
         _ownsClient = false;
+        _logger = (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger<NeptuneBulkLoaderClient>();
     }
 
     public async Task<BulkLoadStartResult> StartLoadAsync(Uri s3SourceUri, string iamRoleArn, string region, CancellationToken cancellationToken = default)
@@ -37,7 +51,7 @@ public sealed class NeptuneBulkLoaderClient : INeptuneBulkLoaderClient, IDisposa
             FailOnError: "FALSE", Parallelism: "MEDIUM");
 
         using var response = await SendWithRetryAsync(() => _http.PostAsJsonAsync("loader", body, cancellationToken), cancellationToken);
-        response.EnsureSuccessStatusCode();
+        await EnsureSuccessAsync(response, cancellationToken);
 
         var parsed = await response.Content.ReadFromJsonAsync<StartLoadResponse>(cancellationToken);
         var loadId = parsed?.Payload?.LoadId
@@ -49,7 +63,7 @@ public sealed class NeptuneBulkLoaderClient : INeptuneBulkLoaderClient, IDisposa
     {
         using var response = await SendWithRetryAsync(
             () => _http.GetAsync($"loader/{loadId}?details=true&errors=true", cancellationToken), cancellationToken);
-        response.EnsureSuccessStatusCode();
+        await EnsureSuccessAsync(response, cancellationToken);
 
         var parsed = await response.Content.ReadFromJsonAsync<LoadStatusResponse>(cancellationToken);
         var overall = parsed?.Payload?.OverallStatus
@@ -65,6 +79,21 @@ public sealed class NeptuneBulkLoaderClient : INeptuneBulkLoaderClient, IDisposa
             loadId, MapStatus(overall.Status), overall.Status,
             overall.TotalRecords, overall.ParsingErrors, overall.DatatypeMismatchErrors, overall.InsertErrors,
             errorMessages);
+    }
+
+    /// <summary>Logs and throws <see cref="NeptuneBulkLoadException"/> with the response body on a non-success status, instead of the bodyless exception <c>EnsureSuccessStatusCode()</c> would throw.</summary>
+    private async Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        if (response.IsSuccessStatusCode)
+        {
+            return;
+        }
+
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        _logger.LogError(
+            "Neptune bulk loader request to {Endpoint} failed with {StatusCode}: {ResponseBody}",
+            response.RequestMessage?.RequestUri, response.StatusCode, body);
+        throw new NeptuneBulkLoadException(response.StatusCode, body);
     }
 
     private static BulkLoadStatus MapStatus(string rawStatus) => rawStatus switch

@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
+using Microsoft.EntityFrameworkCore;
 
 namespace Thor.DataLayer.Models.Tenants;
 
@@ -9,6 +10,10 @@ namespace Thor.DataLayer.Models.Tenants;
 /// with the voting/precision context that produced it.
 /// </summary>
 [Table("account_type_assignment")]
+// One current assignment per entity. Load-bearing, not just an optimization: ATRE's writer upserts
+// with ON CONFLICT (entity_id, entity_type) DO NOTHING and acts only on the rows it won, which is
+// what makes two racing or retried flushes over overlapping accounts safe.
+[Index(nameof(EntityId), nameof(EntityType), IsUnique = true)]
 public sealed class AccountTypeAssignment
 {
     [Key]

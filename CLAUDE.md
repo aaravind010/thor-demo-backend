@@ -6,6 +6,8 @@ deployed on AWS. This repository contains code for Backend and Infrastructure. F
 
 Full design: `docs/architecture/ADR.md` (authoritative). Read it before non-trivial work.
 
+Known traps: `GOTCHA.md`. Check it before debugging an unusual error.
+
 ## Stack
 - **Services / functions:** C# / .NET 10 (Thor API, Task API, workflow modules, Lambda authorizer)
 - **Intelligence Engine:** Python + LangChain + AWS Bedrock

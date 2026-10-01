@@ -19,10 +19,16 @@ RUN dotnet publish backend/services/Thor.TaskAPI/Thor.TaskApi.csproj --no-restor
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 # curl isn't in this base image by default; needed for the ECS healthcheck.
-RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+# ca-certificates is upgraded in the same layer so it sees fresh package lists.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && apt-get install -y --no-install-recommends --only-upgrade ca-certificates \
+    && update-ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
 # Self-signed cert — task-api always terminates TLS on Service Connect.
+# openssl is deliberately not purged afterwards: ca-certificates depends on it, so purging wipes the CA trust store.
 RUN apt-get update && apt-get install -y --no-install-recommends openssl \
     && mkdir -p /app/certs \
     && openssl req -x509 -newkey rsa:2048 -nodes \
@@ -36,7 +42,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends openssl \
          -in /app/certs/server.crt \
          -passout pass:thor-internal \
     && rm /app/certs/server.key /app/certs/server.crt \
-    && apt-get purge -y --auto-remove openssl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /app ./

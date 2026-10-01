@@ -11,6 +11,7 @@ using Thor.Api.Services;
 using Thor.DataConnectionManager;
 using Thor.DataConnectionManager.Exceptions;
 using Thor.DataLayer.Data;
+using Thor.DataLayer.Models.Tenants;
 
 namespace Thor.Api.Test.Controllers.V1;
 
@@ -162,5 +163,56 @@ public class AccountTypesControllerTests
         persisted.Name.Should().Be("Service Account");
         persisted.Description.Should().Be("Non-human automated account");
         persisted.IsHuman.Should().BeFalse();
+    }
+
+    private Guid SeedAccountType(string name)
+    {
+        var id = Guid.NewGuid();
+        using var db = CreateTenantDbContext();
+        db.AccountTypes.Add(new AccountType { Id = id, Name = name, Description = name, IsHuman = false });
+        db.SaveChanges();
+        return id;
+    }
+
+    /// <summary>List returns every account type once the tenant has fewer than a page.</summary>
+    [Fact]
+    public async Task List_ValidRequest_ReturnsAccountTypes()
+    {
+        var first = SeedAccountType("A");
+        var second = SeedAccountType("B");
+        var controller = CreateController();
+        SetHeaders(controller);
+
+        var result = await controller.List(after: null);
+
+        var page = result.Result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<CursorPage<AccountTypeResponse>>().Subject;
+        page.Items.Select(t => t.Id).Should().BeEquivalentTo([first, second]);
+        page.NextCursor.Should().BeNull();
+    }
+
+    /// <summary>An id with no row in the tenant database is 404.</summary>
+    [Fact]
+    public async Task Get_Missing_ReturnsNotFound()
+    {
+        var controller = CreateController();
+        SetHeaders(controller);
+
+        var result = await controller.Get(Guid.NewGuid(), CancellationToken.None);
+
+        result.Result.Should().BeOfType<NotFoundResult>();
+    }
+
+    /// <summary>An existing id returns that account type.</summary>
+    [Fact]
+    public async Task Get_Existing_ReturnsAccountType()
+    {
+        var id = SeedAccountType("Service");
+        var controller = CreateController();
+        SetHeaders(controller);
+
+        var result = await controller.Get(id, CancellationToken.None);
+
+        result.Result.Should().BeOfType<OkObjectResult>()
+            .Which.Value.Should().BeOfType<AccountTypeResponse>().Which.Name.Should().Be("Service");
     }
 }

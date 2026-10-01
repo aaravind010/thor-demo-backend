@@ -19,6 +19,7 @@ FROM python:3.12-slim AS runtime
 WORKDIR /app
 
 # Self-signed cert — intelligence-engine always terminates TLS on Service Connect.
+# openssl is deliberately not purged afterwards: ca-certificates depends on it, so purging wipes the CA trust store.
 RUN apt-get update && apt-get install -y --no-install-recommends openssl \
     && mkdir -p /app/certs \
     && openssl req -x509 -newkey rsa:2048 -nodes \
@@ -26,7 +27,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends openssl \
          -out /app/certs/server.crt \
          -days 825 \
          -subj "/CN=intelligence-engine.internal" \
-    && apt-get purge -y --auto-remove openssl \
     && rm -rf /var/lib/apt/lists/*
 
 # uv.lock records the project itself as `source = { editable = "." }`, so the venv resolves

@@ -70,4 +70,24 @@ public class SourcesController(SourceService sourceService) : ControllerBase
             return StatusCode(StatusCodes.Status403Forbidden);
         }
     }
+
+    [HttpGet("{id:guid}")]
+    public async Task<ActionResult<SourceResponse>> Get(Guid id, CancellationToken cancellationToken)
+    {
+        if (!Request.Headers.TryGetValue(TenantConstants.TenantHeaderName, out var tenantHeaderValue) ||
+            !Guid.TryParse(tenantHeaderValue, out var tenantId))
+        {
+            return BadRequest($"Missing or invalid '{TenantConstants.TenantHeaderName}' header.");
+        }
+
+        try
+        {
+            var response = await sourceService.GetAsync(tenantId, id, cancellationToken);
+            return response is null ? NotFound() : Ok(response);
+        }
+        catch (TenantNotFoundException)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden);
+        }
+    }
 }

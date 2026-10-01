@@ -16,9 +16,11 @@ public class TenantDbContext(DbContextOptions<TenantDbContext> options) : DbCont
 
     public DbSet<ScanManifest> ScanManifests => Set<ScanManifest>();
 
-    public DbSet<MigrationProbe> MigrationProbes => Set<MigrationProbe>();
+    public DbSet<ScanFile> ScanFiles => Set<ScanFile>();
 
     public DbSet<ScanTask> Tasks => Set<ScanTask>();
+
+    public DbSet<TaskProgress> TaskProgresses => Set<TaskProgress>();
 
     public DbSet<WorkflowEntity> Workflows => Set<WorkflowEntity>();
 
@@ -44,6 +46,8 @@ public class TenantDbContext(DbContextOptions<TenantDbContext> options) : DbCont
 
     public DbSet<StagingGrp> StagingGrps => Set<StagingGrp>();
 
+    public DbSet<StagingIdentity> StagingIdentities => Set<StagingIdentity>();
+
     public DbSet<Account> Accounts => Set<Account>();
 
     public DbSet<AccountType> AccountTypes => Set<AccountType>();
@@ -53,6 +57,8 @@ public class TenantDbContext(DbContextOptions<TenantDbContext> options) : DbCont
     public DbSet<AccountTypeAssignmentEvent> AccountTypeAssignmentEvents => Set<AccountTypeAssignmentEvent>();
 
     public DbSet<AccountTypeRule> AccountTypeRules => Set<AccountTypeRule>();
+
+    public DbSet<AtreVote> AtreVotes => Set<AtreVote>();
 
     public DbSet<Asset> Assets => Set<Asset>();
 
@@ -84,6 +90,12 @@ public class TenantDbContext(DbContextOptions<TenantDbContext> options) : DbCont
 
     public DbSet<OneSidedRef> OneSidedRefs => Set<OneSidedRef>();
 
+    public DbSet<OwnershipRule> OwnershipRules => Set<OwnershipRule>();
+
+    public DbSet<OwnershipVote> OwnershipVotes => Set<OwnershipVote>();
+
+    public DbSet<OwnershipWalkCandidate> OwnershipWalkCandidates => Set<OwnershipWalkCandidate>();
+
     public DbSet<PaiResult> PaiResults => Set<PaiResult>();
 
     public DbSet<PartyAssignment> PartyAssignments => Set<PartyAssignment>();
@@ -114,11 +126,23 @@ public class TenantDbContext(DbContextOptions<TenantDbContext> options) : DbCont
         modelBuilder.Entity<StagingEdge>().HasNoKey();
         modelBuilder.Entity<StagingEntitlement>().HasNoKey();
         modelBuilder.Entity<StagingGrp>().HasNoKey();
+        modelBuilder.Entity<StagingIdentity>().HasNoKey();
 
         modelBuilder.Entity<GraphBulkLoadJob>()
             .HasIndex(j => new { j.ScanId, j.ScanManifestId })
             .IsUnique()
             .HasFilter("status IN ('starting', 'started')");
+
+        // Makes every scan_file write an upsert keyed on the file: Step Functions retries each Map
+        // item up to four times and SQS delivery is at-least-once, so the same file is written more
+        // than once in the ordinary case, not only on failure.
+        modelBuilder.Entity<ScanFile>()
+            .HasIndex(f => new { f.ScanId, f.FileLocation })
+            .IsUnique();
+
+        // Serves the per-source rollup, which counts files by status within a scan task.
+        modelBuilder.Entity<ScanFile>()
+            .HasIndex(f => new { f.ScanTaskId, f.Status });
 
         foreach (var foreignKey in modelBuilder.Model.GetEntityTypes().SelectMany(e => e.GetForeignKeys()))
         {

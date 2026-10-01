@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Security.Cryptography.X509Certificates;
 using Npgsql;
 using Thor.DataConnectionManager.Caching;
 using Thor.DataConnectionManager.Routing;
@@ -110,9 +111,21 @@ public sealed class TenantConnectionManager(
             Database = routing.DatabaseName,
             Username = routing.DbUser,
             SslMode = SslMode.Require,
+            // RDS Proxy has no GSS encryption. Npgsql's default (Prefer) first tries to acquire
+            // Kerberos credentials natively, which can stall the open until Timeout elapses.
+            GssEncryptionMode = GssEncryptionMode.Disable,
         }.ConnectionString;
 
         var builder = new NpgsqlDataSourceBuilder(connectionString);
+        // The VPC has no internet egress. Without this, .NET on Linux tries to download missing
+        // issuer certs of the RDS Proxy's ACM certificate (AIA) while building the chain, which
+        // hangs the TLS handshake until Timeout — even though SslMode.Require accepts any cert.
+        builder.UseSslClientAuthenticationOptionsCallback(options =>
+            options.CertificateChainPolicy = new X509ChainPolicy
+            {
+                DisableCertificateDownloads = true,
+                RevocationMode = X509RevocationMode.NoCheck,
+            });
         builder.UsePeriodicPasswordProvider(
             (_, _) => new ValueTask<string>(
                 tokenProvider.GenerateToken(routing.ClusterEndpoint, ProxyPort, routing.DbUser, routing.Region)),

@@ -57,10 +57,8 @@ resource "aws_security_group" "master_db_seed" {
 
   tags = merge(var.tags, { Name = "${local.name_prefix}-sg" })
 
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
   lifecycle {
     create_before_destroy = true
-    ignore_changes        = [tags, tags_all]
   }
 }
 
@@ -76,11 +74,6 @@ resource "aws_vpc_security_group_ingress_rule" "master_db_seed_to_proxy" {
   ip_protocol                  = "tcp"
 
   tags = merge(var.tags, { Name = "${local.name_prefix}-proxy-ingress" })
-
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
-  lifecycle {
-    ignore_changes = [tags, tags_all]
-  }
 }
 
 data "aws_iam_policy_document" "assume" {
@@ -99,22 +92,12 @@ resource "aws_iam_role" "master_db_seed" {
   assume_role_policy   = data.aws_iam_policy_document.assume.json
   permissions_boundary = var.iam_permissions_boundary_arn
   tags                 = var.tags
-
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
-  lifecycle {
-    ignore_changes = [tags, tags_all]
-  }
 }
 
 resource "aws_cloudwatch_log_group" "master_db_seed" {
   name              = "/aws/lambda/${local.name_prefix}"
   retention_in_days = 30
   tags              = var.tags
-
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
-  lifecycle {
-    ignore_changes = [tags, tags_all]
-  }
 }
 
 # Logs to own log group only + rds-db:connect scoped to thor_master_seed (mints an IAM token
@@ -179,11 +162,6 @@ resource "aws_lambda_function" "master_db_seed" {
   depends_on = [aws_cloudwatch_log_group.master_db_seed, aws_iam_role_policy.permissions]
 
   tags = var.tags
-
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
-  lifecycle {
-    ignore_changes = [tags, tags_all]
-  }
 }
 
 # Runs the seed Lambda at apply. Re-invokes whenever the function code changes (source_code_hash

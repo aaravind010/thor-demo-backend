@@ -13,7 +13,15 @@
     <ProjectReference Include="..\..\shared\Thor.DataConnectionManager\Thor.DataConnectionManager.csproj" />
     <ProjectReference Include="..\..\shared\Thor.DataLayer\Thor.DataLayer.csproj" />
     <ProjectReference Include="..\..\shared\Thor.Core\Thor.Core.csproj" />
-    <ProjectReference Include="..\..\shared\Thor.Auth\Thor.Auth.csproj" />
+  </ItemGroup>
+
+  <!-- test/ holds its own project (Thor.TaskApi.Test); exclude it from this project's default
+       globs so its files aren't also compiled into Thor.TaskApi itself. -->
+  <ItemGroup>
+    <Compile Remove="test\**" />
+    <Content Remove="test\**" />
+    <EmbeddedResource Remove="test\**" />
+    <None Remove="test\**" />
   </ItemGroup>
 
   <ItemGroup>
@@ -21,6 +29,7 @@
     <PackageReference Include="Asp.Versioning.Mvc.ApiExplorer" Version="10.2.1" />
     <PackageReference Include="Asp.Versioning.OpenApi" Version="10.2.1" />
     <PackageReference Include="AWSSDK.S3" Version="4.0.5" />
+    <PackageReference Include="AWSSDK.SecretsManager" Version="4.0.4.4" />
     <PackageReference Include="DotNetEnv" Version="3.2.0" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.11" />
     <PackageReference Include="Microsoft.Extensions.ApiDescription.Server" Version="10.0.11">

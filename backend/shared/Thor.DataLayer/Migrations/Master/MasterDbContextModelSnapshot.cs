@@ -86,10 +86,6 @@ namespace Thor.DataLayer.Migrations.Master
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    b.Property<short>("ConnectorTypeId")
-                        .HasColumnType("smallint")
-                        .HasColumnName("connector_type_id");
-
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasColumnType("text")
@@ -97,9 +93,24 @@ namespace Thor.DataLayer.Migrations.Master
 
                     b.HasKey("Id");
 
+                    b.ToTable("authentication_types", "master");
+                });
+
+            modelBuilder.Entity("Thor.DataLayer.Models.AuthenticationTypeConnectorType", b =>
+                {
+                    b.Property<Guid>("AuthenticationTypeId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("authentication_type_id");
+
+                    b.Property<short>("ConnectorTypeId")
+                        .HasColumnType("smallint")
+                        .HasColumnName("connector_type_id");
+
+                    b.HasKey("AuthenticationTypeId", "ConnectorTypeId");
+
                     b.HasIndex("ConnectorTypeId");
 
-                    b.ToTable("authentication_types", "master");
+                    b.ToTable("authentication_type_connector_types", "master");
                 });
 
             modelBuilder.Entity("Thor.DataLayer.Models.ConnectorConfigField", b =>
@@ -163,7 +174,7 @@ namespace Thor.DataLayer.Migrations.Master
 
                     b.ToTable("connector_types", "master", t =>
                         {
-                            t.HasComment("Canonical connector-type lookup (id -> name), see ADR §6.2. Every tenant-DB table with a connector_type column (Source, Account, Grp, Asset, Entitlement, their Staging counterparts, and ScanConnectorConfigValue) references this table's id at the application level only — no physical FK, since those tables live in a separate per-tenant database. Within the Master DB itself, AuthenticationType and ConnectorConfigField reference it with a real FK.");
+                            t.HasComment("Canonical connector-type lookup (id -> name), see ADR §6.2. Every tenant-DB table with a connector_type column (Source, Account, Grp, Asset, Entitlement, their Staging counterparts, and ScanConnectorConfigValue) references this table's id at the application level only — no physical FK, since those tables live in a separate per-tenant database. Within the Master DB itself, AuthenticationTypeConnectorType and ConnectorConfigField reference it with a real FK.");
                         });
                 });
 
@@ -399,6 +410,9 @@ namespace Thor.DataLayer.Migrations.Master
 
                     b.HasKey("TenantId");
 
+                    b.HasIndex("UserPoolId")
+                        .IsUnique();
+
                     b.ToTable("tenant_routing", "auth");
                 });
 
@@ -413,13 +427,21 @@ namespace Thor.DataLayer.Migrations.Master
                     b.Navigation("AuthenticationType");
                 });
 
-            modelBuilder.Entity("Thor.DataLayer.Models.AuthenticationType", b =>
+            modelBuilder.Entity("Thor.DataLayer.Models.AuthenticationTypeConnectorType", b =>
                 {
+                    b.HasOne("Thor.DataLayer.Models.AuthenticationType", "AuthenticationType")
+                        .WithMany("ConnectorTypes")
+                        .HasForeignKey("AuthenticationTypeId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
                     b.HasOne("Thor.DataLayer.Models.ConnectorType", "ConnectorType")
                         .WithMany("AuthenticationTypes")
                         .HasForeignKey("ConnectorTypeId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.Navigation("AuthenticationType");
 
                     b.Navigation("ConnectorType");
                 });
@@ -501,6 +523,8 @@ namespace Thor.DataLayer.Migrations.Master
             modelBuilder.Entity("Thor.DataLayer.Models.AuthenticationType", b =>
                 {
                     b.Navigation("AuthenticationFields");
+
+                    b.Navigation("ConnectorTypes");
                 });
 
             modelBuilder.Entity("Thor.DataLayer.Models.ConnectorType", b =>

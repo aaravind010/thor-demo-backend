@@ -7,6 +7,11 @@ namespace Thor.Authorizer.Core.Auth.ApiKey;
 /// only — key_id is opaque, secret is opaque and may itself contain dots.
 /// Cheap checks (status, expiry) run before the PBKDF2 hash verify, since the hash compute is
 /// by far the most expensive step and a revoked/expired key should never pay that cost.
+/// <para>
+/// The key's tenant comes from its stored record, never from the request (ADR §5): key_id is a
+/// globally unique id, and the tenant binding is only trusted once the secret has verified
+/// against that record's hash.
+/// </para>
 /// </summary>
 public sealed class ApiKeyValidator : IApiKeyValidator
 {
@@ -23,7 +28,7 @@ public sealed class ApiKeyValidator : IApiKeyValidator
         _timeProvider = timeProvider;
     }
 
-    public async Task<ApiKeyValidationResult> ValidateAsync(string tenantId, string keyMaterial)
+    public async Task<ApiKeyValidationResult> ValidateAsync(string keyMaterial)
     {
         var separatorIndex = keyMaterial.IndexOf('.');
         if (separatorIndex <= 0 || separatorIndex == keyMaterial.Length - 1)
@@ -34,11 +39,10 @@ public sealed class ApiKeyValidator : IApiKeyValidator
         var keyId = keyMaterial[..separatorIndex];
         var secret = keyMaterial[(separatorIndex + 1)..];
 
-        // Tenant-scoped lookup ONLY — never a global key_id lookup across tenants.
-        var record = await _repository.GetByKeyIdAsync(tenantId, keyId);
+        var record = await _repository.GetByKeyIdAsync(keyId);
         if (record is null)
         {
-            return ApiKeyValidationResult.Failure("key not found for tenant");
+            return ApiKeyValidationResult.Failure("key not found");
         }
 
         if (!string.Equals(record.StatusId, ActiveStatus, StringComparison.Ordinal))
@@ -56,7 +60,7 @@ public sealed class ApiKeyValidator : IApiKeyValidator
             return ApiKeyValidationResult.Failure("secret mismatch");
         }
 
-        var scopes = await _repository.GetScopesForKeyAsync(tenantId, keyId);
-        return ApiKeyValidationResult.Success(record.PrincipalId, scopes.Select(s => s.Name).ToArray());
+        var scopes = await _repository.GetScopesForKeyAsync(keyId);
+        return ApiKeyValidationResult.Success(record.TenantId, record.PrincipalId, scopes.Select(s => s.Name).ToArray());
     }
 }

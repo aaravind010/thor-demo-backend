@@ -43,20 +43,23 @@ inputs = {
       bake_time_in_minutes  = 5
     }
     task-api = {
-      container_image       = ""
-      container_port        = 8443
-      cpu                   = 512  # 0.5 vCPU
-      memory                = 1024 # 1 GB
-      desired_count         = 2
-      min_healthy_percent   = 100
-      max_percent           = 200
-      health_check_path     = "/health"
-      log_retention_days    = 30
-      environment_variables = {}
-      secrets               = {}
-      expose_via_nlb        = false
-      deployment_strategy   = "BLUE_GREEN"
-      bake_time_in_minutes  = 5
+      container_image     = ""
+      container_port      = 8443
+      cpu                 = 512  # 0.5 vCPU
+      memory              = 1024 # 1 GB
+      desired_count       = 2
+      min_healthy_percent = 100
+      max_percent         = 200
+      health_check_path   = "/health"
+      log_retention_days  = 30
+      environment_variables = {
+        THOR_TASKAPI_SCAN_TASK_STALL_TIMEOUT_SECONDS = "1800"
+        THOR_TASKAPI_SCAN_TASK_MAX_RETRIES           = "3"
+      }
+      secrets              = {}
+      expose_via_nlb       = false
+      deployment_strategy  = "BLUE_GREEN"
+      bake_time_in_minutes = 5
     }
     intelligence-engine = {
       container_image       = ""
@@ -142,12 +145,37 @@ inputs = {
   # get_repo_root() stays valid across any Terragrunt cache copy. dotnet publish must have already written here.
   authorizer_source_dir = "${get_repo_root()}/backend/functions/Thor.Authorizer/publish"
 
-  # --- ingestion pipeline ---
-  # Off until an ingestion image exists in thor-dev-ingestion-ecr: the per-step Lambdas are
-  # package_type = "Image" and CreateFunction validates the URI, so apply fails without one.
-  enable_ingestion            = false
-  create_manifest_source_dir  = "${get_repo_root()}/backend/functions/Thor.CreateManifest/publish"
-  ingestion_driver_source_dir = "${get_repo_root()}/backend/workflows/Thor.Workflows.IngestionDriver/publish"
+  # --- workflows ---
+  # Each name must have a matching entry in local.workflow_definitions (infra/src/workflow_definitions.tf),
+  # which is where its steps, buckets and trigger live. The ECR repository and security group are
+  # created regardless of enabled -- an image has to be pushable before the compute that runs it
+  # exists, and rds_proxy/neptune build their ingress rules from the security group.
+  #
+  # Deploying a new image does NOT require a Terraform apply: Terraform points the compute at a
+  # floating tag and CI moves that tag. enabled gates whether the workflow exists at all.
+  workflows = {
+    ingestion = { enabled = true }
+
+    # Enabled alongside ingestion, which chains to it: ingestion's StartAtre state names ATRE's
+    # state machine by built ARN, so leaving ATRE off would give the live ingestion definition a
+    # final state pointing at nothing. ATRE is all Lambda, and Lambda resolves the image at
+    # CreateFunction, so a first deploy needs the three steps in
+    # docs/Infra_pipeline/workflow-deployment.md; dev is past that.
+    atre = { enabled = true }
+
+    # Chained from ingestion after ATRE (StartOwnership). All Lambda, and Lambda resolves the image
+    # at CreateFunction, so enabling it needs CI to have pushed an ownership image first
+    # (docs/Infra_pipeline/workflow-deployment.md, "First deployment of Ownership").
+    ownership = { enabled = true }
+  }
+
+  # Lets Neptune's bulk loader read these workflows' graph-load buckets. Each is gated on its workflow
+  # being enabled, so listing one that is still disabled grants nothing yet; any enabled one is also
+  # what creates the loader role.
+  #
+  neptune_bulk_load_workflows = ["ingestion", "ownership"]
+
+  create_manifest_source_dir = "${get_repo_root()}/backend/functions/Thor.CreateManifest/publish"
 
   # --- neptune graph db ---
   enable_neptune                = true
@@ -177,7 +205,7 @@ inputs = {
   # directly, so migrations are skipped here and the bootstrap only re-applies DB roles/grants.
   # thor-dev's schema is stale relative to the current model until this is reconciled — revert once
   # the history table is fixed.
-  db_bootstrap_skip_migrations = true
+  db_bootstrap_skip_migrations = false
 
   # --- master db seed (in-VPC Lambda that writes deployment seed data via IAM through the RDS Proxy) ---
   master_db_seed_source_dir = "${get_repo_root()}/backend/functions/Thor.MasterDbSeed/publish"
@@ -196,10 +224,6 @@ inputs = {
   tenant_provisioning_base_domain = "dev.sphereboarddev.ai"
   # TODO: set to the API's public hostname (wildcard custom domain target) before enabling.
   tenant_provisioning_dns_target = "api.dev.sphereboarddev.ai"
-
-  # --- tenant schema migrations (expand phase; deploy.yml gates service deploys on it) ---
-  enable_tenant_migration   = true
-  tenant_migration_asl_path = "${get_repo_root()}/migrations/tenant/statemachine/tenant-migration.asl.json"
 
   tags = {}
 }

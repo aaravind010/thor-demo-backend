@@ -10,7 +10,7 @@ namespace Thor.Api.Services;
 
 /// <summary>
 /// Backs <c>POST /scan-config</c>: validates that the requested sources share one connector
-/// type, that the authentication method exists and matches that connector type, and that the
+/// type, that the authentication method exists and its type supports that connector type, and that the
 /// submitted connector config values match that connector's config fields in the Master
 /// metadata DB, then persists a
 /// <see cref="ScanConfig"/> together with its <see cref="ScanSourceMapping"/> and
@@ -59,11 +59,10 @@ public sealed class ScanConfigService(
         var authType = await authTypeRepository.GetByIdAsync(authMethod.TypeId, cancellationToken)
             ?? throw new AuthenticationTypeNotFoundException(authMethod.TypeId);
 
-        if (authType.ConnectorTypeId != connectorType)
+        if (!await authTypeRepository.SupportsConnectorTypeAsync(authType.Id, connectorType, cancellationToken))
         {
-            var ids = new[] { authType.ConnectorTypeId, connectorType };
-            var names = await ResolveConnectorTypeNamesAsync(connectorTypeRepository, ids, cancellationToken);
-            throw new AuthMethodConnectorTypeMismatchException(names[authType.ConnectorTypeId], names[connectorType]);
+            var names = await ResolveConnectorTypeNamesAsync(connectorTypeRepository, [connectorType], cancellationToken);
+            throw new AuthMethodConnectorTypeMismatchException(authType.Name, names[connectorType]);
         }
 
         var configFieldRepository = new ConnectorConfigFieldRepository(masterDb);

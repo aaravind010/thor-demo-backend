@@ -3,25 +3,28 @@ name: Infra
 # Reviews and applies Terraform/Terragrunt changes for dev, qa, prod.
 # PR: read-only checks. Push: same checks, then applies — auto for dev, approval-gated for qa/prod via GitHub
 # Environments shared with backend deploy. Both triggers fire on a merge; only the push side applies.
-# This is the only workflow that builds and deploys the Lambdas, so the path filter has to cover everything
-# that lands in a Lambda zip — not just infra/ and backend/functions/, but backend/workflows/ (the ingestion
-# driver ships as a zip too), backend/shared/ (pulled in by ProjectReference) and the publish script that
-# assembles the payload. Omitting them means a shared-only change never redeploys the functions that embed it.
+# This is the only workflow that builds and deploys the zip Lambdas, so the path filter has to cover
+# everything that lands in one: infra/, backend/functions/, backend/shared/ (pulled in by
+# ProjectReference) and the publish script that assembles the payload. Omitting them means a
+# shared-only change never redeploys the functions that embed it.
+#
+# backend/workflows/ is still filtered on but no longer produces a zip — workflow modules are
+# container images, and their images deploy without Terraform (see modules/workflow's floating tag).
+# It stays because a workflow code change can still alter the Terraform-managed shape around it.
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
     branches: [dev, qa, main]
-    paths: ["infra/**", "backend/functions/**", "backend/workflows/**", "backend/shared/**", "scripts/publish-lambda-functions.sh", ".github/workflows/infra.yml"]
+    paths: ["infra/**", "backend/functions/**", "backend/workflows/**", "backend/shared/**", "scripts/publish-lambda-functions.sh", "scripts/validate-asl.sh", ".github/workflows/infra.yml"]
   push:
     branches: [dev, qa, main]
-    paths: ["infra/**", "backend/functions/**", "backend/workflows/**", "backend/shared/**", "scripts/publish-lambda-functions.sh", ".github/workflows/infra.yml"]
+    paths: ["infra/**", "backend/functions/**", "backend/workflows/**", "backend/shared/**", "scripts/publish-lambda-functions.sh", "scripts/validate-asl.sh", ".github/workflows/infra.yml"]
 
 # JFROG_HOSTNAME / JFROG_STATE_BACKEND_REPOSITORY: required by root.hcl's get_env() (fails loud if unset).
 # TF_TOKEN_...: Terraform's login for that backend. JFROG_ACCESS_TOKEN / JFROG_USERNAME (from secrets.jf_api_thor
 # / vars.jf_usr_thor) and JFROG_LAMBDA_ARTIFACTS_REPOSITORY: used by publish-lambda-functions.sh's build cache.
 env:
-  DOTNET_VERSION: "10.0.100"
   TF_TOKEN_sphereco_jfrog_io: ${{ secrets.jf_api_thor }}
   JFROG_HOSTNAME: ${{ vars.JFROG_HOSTNAME }}
   JFROG_STATE_BACKEND_REPOSITORY: ${{ vars.JFROG_STATE_BACKEND_REPOSITORY}}
@@ -34,8 +37,11 @@ env:
   PROD_AWS_REGION: ${{ vars.PROD_AWS_REGION }}
 
 # One run per branch at a time; never cancels mid-run to avoid a half-applied state.
+# The group is shared with deploy.yml (which uses the same aws-<branch> string), because both
+# workflows fire on a backend/shared/** change and both mutate ECS in the same account —
+# terragrunt apply registers task-definition revisions while ecs-deploy is rolling services.
 concurrency:
-  group: infra-${{ github.event_name == 'push' && github.ref_name || github.base_ref }}
+  group: aws-${{ github.event_name == 'push' && github.ref_name || github.base_ref }}
   cancel-in-progress: false
 
 permissions:
@@ -46,6 +52,7 @@ permissions:
 jobs:
   context:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       environment: ${{ steps.set.outputs.environment }}
     steps:
@@ -75,6 +82,7 @@ jobs:
   validate-terragrunt:
     needs: context
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: infra/envs/${{ needs.context.outputs.environment }}
@@ -109,9 +117,20 @@ jobs:
           tflint --init
           tflint --recursive
 
+      # The workflow state machines are authored as ASL, not generated from HCL, so AWS's own
+      # validator can check them before anything is applied. This is what catches DUPLICATE_STATE_NAME,
+      # unreachable states and unresolved transitions — the class of error that previously only
+      # surfaced when Step Functions rejected the apply.
+      #
+      # ValidateStateMachineDefinition creates nothing; terragrunt-setup above already assumed the role.
+      - name: Validate workflow state machine definitions
+        working-directory: .
+        run: ./scripts/validate-asl.sh
+
   plan-terragrunt:
     needs: [context, validate-terragrunt]
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: infra/envs/${{ needs.context.outputs.environment }}
@@ -119,9 +138,12 @@ jobs:
       - uses: actions/checkout@v4
 
       # root.hcl's before_hook runs dotnet publish before plan/apply — needs the SDK first. Not needed by init/validate.
+      # global-json-file, not a literal: global.json pins 10.0.300 with rollForward: latestFeature, which
+      # rolls forward within the 10.0.3xx band and never backward — so the previous hardcoded 10.0.100
+      # installed an SDK that `dotnet` would refuse to use.
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
+          global-json-file: global.json
 
       - uses: ./.github/actions/terragrunt-setup
         with:
@@ -161,8 +183,8 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           shopt -s nullglob
-          zips=(backend/functions/*/*.zip backend/workflows/*/*.zip)
-          pubs=(backend/functions/*/publish backend/workflows/*/publish)
+          zips=(backend/functions/*/*.zip)
+          pubs=(backend/functions/*/publish)
           if [ "${#zips[@]}" -eq 0 ]; then
             echo "::error::terragrunt plan produced no lambda build zips — apply would fail reading them." >&2
             exit 1
@@ -213,6 +235,8 @@ jobs:
     runs-on: ubuntu-latest
     # Shared dev/qa/prod Environments with backend deploy — only qa/prod require review.
     environment: ${{ needs.context.outputs.environment }}
+    # Counted from when the approval is granted, not from when the job starts waiting.
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: infra/envs/${{ needs.context.outputs.environment }}
@@ -259,6 +283,7 @@ jobs:
     needs: [context, apply-terragrunt]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     # Same environment apply-terragrunt used — no second reviewer prompt.
     environment: ${{ needs.context.outputs.environment }}
     steps:

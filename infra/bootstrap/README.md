@@ -13,7 +13,7 @@ then runs the embedded role/grant script (`.../Thor.DbBootstrap.Function/db-role
 | `thor_provisioner` | Tenant-provisioning **DDL only** (create-tenant-database step) | `LOGIN CREATEDB CREATEROLE`, `rds_iam WITH ADMIN OPTION` |
 | `thor_metadata_writer` | Write tenant metadata (seed + finalize-routing steps) | `LOGIN`, `rds_iam`, write on the two `auth` tables, read on `master` |
 | `thor_app` | Runtime read of tenant routing | `LOGIN`, `rds_iam`, read on `auth` + `master` |
-| `thor_authorizer` | Authorizer's subdomain→routing lookup (in-VPC, IAM via the RDS Proxy) | `LOGIN`, `rds_iam`, read on `auth.tenant` + `auth.tenant_routing` |
+| `thor_authorizer` | Authorizer's user-pool/tenant-id → routing lookup (in-VPC, IAM via the RDS Proxy) | `LOGIN`, `rds_iam`, read on `auth.tenant` + `auth.tenant_routing` |
 
 **Every role uses RDS IAM auth — there is no password anywhere.** The authorizer now runs in-VPC
 and connects through the RDS Proxy with an IAM token as `thor_authorizer` (the RDS Data API is
@@ -36,7 +36,7 @@ later by the provisioning workflow, not here.
 
 Migrations run **before** the role script within the same invocation, so on a brand-new cluster a
 single `apply` yields the schema, the roles, and the table grants (which are guarded on
-`auth.tenant` / `auth.tenant_routing` existing). Note the publish hook only hashes each function's
-own `src/`: a change to a Master migration in `Thor.DataLayer` alone does not rebuild this Lambda —
-touch something under `Thor.DbBootstrap/src` (or delete its `.publish-hash`) to force the
-redeploy + re-invocation.
+`auth.tenant` / `auth.tenant_routing` existing). The publish hook hashes each function's own `src/`
+plus all of `backend/shared/` (see `scripts/publish-lambda-functions.sh`), so a new Master
+migration in `Thor.DataLayer` alone rebuilds this Lambda, which changes its `source_code_hash` and
+re-invokes it on the next `apply`. No edit under `Thor.DbBootstrap/src` is needed.

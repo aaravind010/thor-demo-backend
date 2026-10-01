@@ -2,7 +2,7 @@
 -- Run against the Master metadata database (THOR_MASTERDB_* in .env), schema "master".
 --
 -- Seeds connector_types, the canonical id->name lookup for "connector type" everywhere
--- else in the codebase uses a smallint: authentication_types.connector_type_id and
+-- else in the codebase uses a smallint: authentication_type_connector_types.connector_type_id and
 -- connector_config_fields.connector_type_id (both real FKs to this table, same database),
 -- plus every tenant-DB ingestion table (source.connector_type, account.connector_type,
 -- etc.) and scan_connector_config_values.connector_type, which reference these ids at the

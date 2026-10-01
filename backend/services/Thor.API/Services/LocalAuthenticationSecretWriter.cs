@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Thor.DataConnectionManager.Secrets;
 
 namespace Thor.Api.Services;
 

@@ -16,6 +16,8 @@ public class MasterDbContext(DbContextOptions<MasterDbContext> options) : DbCont
 
     public DbSet<AuthenticationType> AuthenticationTypes => Set<AuthenticationType>();
 
+    public DbSet<AuthenticationTypeConnectorType> AuthenticationTypeConnectorTypes => Set<AuthenticationTypeConnectorType>();
+
     public DbSet<AuthenticationField> AuthenticationFields => Set<AuthenticationField>();
 
     public DbSet<ConnectorConfigField> ConnectorConfigFields => Set<ConnectorConfigField>();
@@ -34,5 +36,8 @@ public class MasterDbContext(DbContextOptions<MasterDbContext> options) : DbCont
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.HasDefaultSchema("master");
+
+        modelBuilder.Entity<AuthenticationTypeConnectorType>()
+            .HasKey(m => new { m.AuthenticationTypeId, m.ConnectorTypeId });
     }
 }

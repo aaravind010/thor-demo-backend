@@ -100,8 +100,16 @@ apply registered), patches only the image, and updates the service. Three conseq
   commit the `.pem`, apply, then deploy; thor-api, task-api and the authorizer must all end up on
   the same keypair or connector tokens stop verifying somewhere.
 
-A deploy of any one service also syncs its two siblings, so one deploy rolls thor-api, task-api and
-intelligence-engine onto their newest revisions together.
+Rolling all three onto a freshly seeded keypair is the `Roll services` workflow
+(`.github/workflows/roll-services.yml`, run manually against one environment). It forces a new
+deployment on thor-api, task-api and intelligence-engine without changing their images — the secrets
+arrive as `valueFrom` ARNs, so ECS re-resolves them when the new tasks start.
+
+An ordinary deploy no longer does this. It used to: every `ecs-deploy` also redeployed the two
+siblings on their current image, which tripled the blast radius of every deploy to solve a problem
+that only exists just after a manual rotation, and resolved each sibling's image from the family's
+latest *registered* revision — which a `terragrunt apply` may have just pinned to `<repo>:latest`.
+
 ## Running tests
 
 Unit tests live in `test/Thor.Api.Test` (xUnit + FluentAssertions + NSubstitute).

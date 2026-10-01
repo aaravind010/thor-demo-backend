@@ -8,14 +8,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 
+  
   <ItemGroup>
-    <!-- test/ holds the separate Thor.Api.Test project; exclude it from this project's own glob. -->
-    <Compile Remove="test\**" />
-    <Content Remove="test\**" />
-    <None Remove="test\**" />
-  </ItemGroup>
-
-  <ItemGroup>
+    <PackageReference Include="AWSSDK.CognitoIdentityProvider" Version="4.0.103.2" />
     <PackageReference Include="AWSSDK.SecretsManager" Version="4.0.100.7" />
     <PackageReference Include="Asp.Versioning.Mvc" Version="10.2.1" />
     <PackageReference Include="Asp.Versioning.Mvc.ApiExplorer" Version="10.2.1" />
@@ -31,6 +26,16 @@
     <ProjectReference Include="..\..\shared\Thor.Auth\Thor.Auth.csproj" />
     <ProjectReference Include="..\..\shared\Thor.DataConnectionManager\Thor.DataConnectionManager.csproj" />
     <ProjectReference Include="..\..\shared\Thor.Core\Thor.Core.csproj" />
+    <ProjectReference Include="..\..\shared\Thor.Rules\Thor.Rules.csproj" />
+  </ItemGroup>
+
+  <!-- test/ holds its own project (Thor.Api.Test); exclude it from this project's default
+       globs so its files aren't also compiled into Thor.Api itself. -->
+  <ItemGroup>
+    <Compile Remove="test\**" />
+    <Content Remove="test\**" />
+    <EmbeddedResource Remove="test\**" />
+    <None Remove="test\**" />
   </ItemGroup>
 
   <!-- test/ holds its own project (Thor.Api.Test); exclude it from this project's default
@@ -51,7 +56,6 @@
 
   <ItemGroup>
     <PackageReference Include="DotNetEnv" Version="3.2.0" />
-    <PackageReference Include="AWSSDK.SecretsManager" Version="4.0.4.4" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.11" />
     <PackageReference Include="Microsoft.Extensions.ApiDescription.Server" Version="10.0.11">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
@@ -59,6 +63,7 @@
     </PackageReference>
     <PackageReference Include="Scalar.AspNetCore" Version="2.16.18" />
     <PackageReference Include="Yarp.ReverseProxy" Version="2.3.0" />
+    <PackageReference Include="DotNetEnv" Version="3.2.0" />
   </ItemGroup>
 
   <PropertyGroup>

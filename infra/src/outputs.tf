@@ -93,17 +93,31 @@ output "frontend_distribution_domain_name" {
   value = var.enable_frontend ? module.frontend[0].distribution_domain_name : null
 }
 
-output "ingestion_ecr_repository_url" {
-  description = "Populated regardless of enable_ingestion — a repo must exist before the flag can turn on"
-  value       = module.ingestion.ecr_repository_url
+# --- workflows -----------------------------------------------------------------------------------
+
+output "workflow_repository_urls" {
+  description = "Workflow name => ECR repository URL. Populated regardless of whether the workflow is enabled, because an image has to be pushable before the compute that runs it exists. This is where CI pushes :<sha> and moves the floating deploy tag."
+  value       = module.workflow_registry.repository_urls
 }
 
-output "ingestion_queue_url" {
-  value = var.enable_ingestion ? module.ingestion.queue_url : null
+output "workflow_security_group_ids" {
+  description = "Workflow name => security group ID, owned by modules/workflow_network so rds_proxy and neptune can grant ingress without depending on a workflow's own resources."
+  value       = module.workflow_network.security_group_ids
 }
 
-output "ingestion_state_machine_arn" {
-  value = var.enable_ingestion ? module.ingestion.state_machine_arn : null
+output "workflow_state_machine_arns" {
+  description = "Workflow name => state machine ARN. Empty string for a workflow that is not enabled."
+  value       = { for name, w in module.workflow : name => w.state_machine_arn }
+}
+
+output "workflow_dlq_arns" {
+  description = "Workflow name => dead-letter queue ARN, for alarms and manual redrive."
+  value       = { for name, w in module.workflow : name => w.dlq_arn }
+}
+
+output "workflow_bucket_names" {
+  description = "Workflow name => its own buckets (e.g. ingestion's graph-load bucket)."
+  value       = { for name, w in module.workflow : name => w.bucket_names }
 }
 
 output "neptune_endpoint" {

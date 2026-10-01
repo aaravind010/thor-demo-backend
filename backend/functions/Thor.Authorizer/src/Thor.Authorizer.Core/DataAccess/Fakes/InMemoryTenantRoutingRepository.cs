@@ -2,13 +2,16 @@ namespace Thor.Authorizer.Core.DataAccess.Fakes;
 
 public sealed class InMemoryTenantRoutingRepository : ITenantRoutingRepository
 {
-    private readonly Dictionary<string, TenantRoute> _routesBySubdomain;
+    private readonly TenantRoute[] _routes;
 
     public InMemoryTenantRoutingRepository(IEnumerable<TenantRoute> seedRoutes)
     {
-        _routesBySubdomain = seedRoutes.ToDictionary(r => r.Subdomain, StringComparer.OrdinalIgnoreCase);
+        _routes = seedRoutes.ToArray();
     }
 
-    public Task<TenantRoute?> GetBySubdomainAsync(string subdomain) =>
-        Task.FromResult(_routesBySubdomain.GetValueOrDefault(subdomain));
+    public Task<TenantRoute?> GetByUserPoolIdAsync(string userPoolId) =>
+        Task.FromResult(_routes.SingleOrDefault(r => string.Equals(r.UserPoolId, userPoolId, StringComparison.Ordinal)));
+
+    public Task<TenantRoute?> GetByTenantIdAsync(string tenantId) =>
+        Task.FromResult(_routes.SingleOrDefault(r => string.Equals(r.TenantId, tenantId, StringComparison.Ordinal)));
 }

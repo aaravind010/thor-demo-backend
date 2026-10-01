@@ -2,7 +2,7 @@
 
 > Companion to `ADR.md` §12 (Ingestion & CDC) and to `attribute_mapping.md` (the field-by-field
 > raw→staging reference for each connector). This document explains how
-> `backend/workflows/Thor.Workflows.Ingestion` implements the ADR's ingestion/CDC decisions today.
+> `backend/workflows/ingestion/Thor.Workflows.Ingestion` implements the ADR's ingestion/CDC decisions today.
 > `attribute_mapping.md` goes one level deeper on per-connector column mappings; this doc covers
 > pipeline shape and control flow.
 
@@ -30,34 +30,32 @@ either as an ECS task or as a Lambda function, sharing the same compiled binary 
 ECS/console image — which of the two backs any given step is a deployment-time choice, made
 independently per step, not a capability specific to any one of them.
 
-**One exception**: whichever entry point backs `graph-load-poll` specifically constrains how its
-wait/re-poll loop can be implemented. `GraphLoadPollStep` reports "still in progress" as a distinct
-outcome (`GraphLoadPollResult.IsInProgress`, mapped to `WorkflowHost.RetryLaterExitCode = 2` on the
-ECS/console entry point) so Step Functions can wait and re-invoke it — but AWS's `ecs:runTask.sync`
-integration treats *any* non-zero essential-container exit code as a task failure
-(`States.TaskFailed`), indistinguishable from a genuine failure without parsing the exit code back
-out of the opaque `Cause` string. On Lambda, the same distinction is just a JSON field
-(`LambdaEntry` returns the step's result object directly), which a `Choice` state can branch on
-cleanly. So a deployment that wants the wait/re-poll loop needs `graph-load-poll` on Lambda, or a
-different in-progress signal on ECS (e.g. status written to S3/DynamoDB and read back via a
-separate SDK-integration state) instead of exit-code branching. Every other step's choice of
-ECS vs. Lambda is unconstrained.
+**One exception**: `graph-load-poll` must run on Lambda. It reports "still in progress" as a distinct
+outcome (`GraphLoadPollResult.IsInProgress`) so Step Functions can wait and re-invoke it, and there is
+no way to express that on ECS. `ecs:runTask.sync` treats *any* non-zero essential-container exit code
+as `States.TaskFailed`, indistinguishable from a genuine failure without parsing it back out of the
+opaque `Cause` string — so a dedicated "retry later" exit code would be caught and sent to the DLQ
+while the Neptune load it was polling was still running. On Lambda the same distinction is just a
+field in the JSON response, which a `Choice` state branches on cleanly.
 
-- `Program.cs` registers four named steps and hands them to whichever entry point matches how
-  it's being invoked, branching on `AWS_LAMBDA_RUNTIME_API` (set by the Lambda execution
-  environment, never set under ECS/Batch):
-  - **ECS/console** (default): `Thor.Workflows.Abstractions.WorkflowHost.RunAsync`. Each
-    invocation reads two env vars: `THOR_STEP` (which step to run) and `THOR_INPUT` (JSON
-    payload, deserializes to `IngestionRequest`). The step's result maps to a process exit code
-    (0 = completed, `WorkflowHost.RetryLaterExitCode` = still in progress, 1 = failed); Step
-    Functions drives retries/DLQ off that exit code — the step never talks to Step Functions
-    directly.
-  - **Lambda**: `Thor.Workflows.Abstractions.LambdaEntry.RunAsync`. Which step a given Lambda
-    function runs is still selected by `THOR_STEP` (one Lambda function per step, sharing the
-    same deployed artifact), but the input comes from the raw Lambda invocation event instead of
-    `THOR_INPUT`, and the step's own result object is returned directly as the Lambda's JSON
-    response — so Step Functions reads a field like `Outcome` straight off the output instead of
-    an exit code.
+More generally: a step whose *result* something downstream reads has to run on Lambda, because
+`ecs:runTask.sync` returns the ECS task description rather than anything the container produced. For
+ingestion that constrains `graph-load-poll` and the list-mode invocation of `extract-stage`; every
+other step's choice of ECS vs. Lambda is free, because nothing reads what they return.
+
+- `Program.cs` registers four named steps and hands them to
+  `Thor.Workflows.Hosting.WorkflowEntryPoint.RunAsync`, which picks the host by checking
+  `AWS_LAMBDA_RUNTIME_API` (set by the Lambda execution environment, never set under ECS). Each
+  module used to make that choice itself; it is a platform concern, so it moved to the platform.
+  - **ECS** (default): `EcsHost`. Each invocation reads two env vars: `THOR_STEP` (which step to
+    run) and `THOR_INPUT` (JSON payload, deserializes to `IngestionRequest`). It reports only
+    success (0) or failure (1) as a process exit code; Step Functions drives retries/DLQ off that —
+    the step never talks to Step Functions directly.
+  - **Lambda**: `LambdaHost`. Which step a given Lambda function runs is still selected by
+    `THOR_STEP` (one Lambda function per step, sharing the same image), but the input comes from
+    the raw invocation event instead of `THOR_INPUT`, and the step's own result object is returned
+    directly as the JSON response — so Step Functions reads a field like `Outcome` straight off the
+    output instead of an exit code.
 
 ```csharp
 public sealed record IngestionRequest(
@@ -155,7 +153,8 @@ own list-mode path) — see §10.1.
 The state machine, the Distributed Map's `ResultWriter` bucket and the DLQ queue the per-file
 `Catch` reuses all live in `infra/src/modules/ingestion/` (`state_machine.tf`, with the shared
 state shapes in `locals.tf`); the compute targets are `lambda_steps.tf` (one Lambda per step) and
-`ecs_task.tf` (one task definition per step), and `lambda.tf` holds CreateManifest and the driver.
+`ecs_task.tf` (one task definition per step), and `lambda.tf` holds CreateManifest — the only
+zip-packaged Lambda left, since select-compute moved into the workflow image.
 - **`ResultWriter` bucket/prefix**: a bucket of its own (`thor-<env>-ingestion-map-results-<account>`,
   not a prefix in the upload bucket, whose `ObjectCreated` notification would re-trigger the
   pipeline), under `ingestion-map-results/{ScanManifestId}/{ExecutionName}/`; nothing in this
@@ -253,6 +252,12 @@ resolution happens later, in the edge gate (§8).
 - **Windows local accounts (402)** — local users and local security groups per file server,
   `MEMBER_OF` edges keyed by `SamAccountName` instead of a DN. Produces no assets or
   entitlements.
+- **HR Feed (17)** — `HrFeedNormalizer` reads the connector's `FeedIngestorData` envelope (the
+  connector has already parsed the tenant's HR CSV into `UserSpecs[]`) and produces people
+  (`ParsedIdentity`, in `IngestBatch.Identities`) — no accounts, groups, or edge refs. The
+  connector's second upload per run, `FeedIngestorPostData` (raw CSV text only), is recognized
+  and stages nothing. `HrFeedExtractor` deliberately skips `JsonRepair` and fails the file on
+  malformed JSON: a salvaged partial roster would wrongly deactivate people on promotion (§7).
 
 ## 6. Staging — `Staging/Stager.cs`
 
@@ -294,6 +299,13 @@ read for "what changed this run") and replaces that entity's `entity_alias` rows
 `AliasKeys` — this is what makes it findable by the edge gate. Then, in the same transaction, it
 deletes the manifest's staging rows and commits — re-running `promote` for the same manifest is
 a no-op the second time, since nothing is left to re-promote.
+
+**Identities (HR feed)** promote from `staging_identity` into `tenant.identity` on
+`(source_id, hr_employee_id)` via `PromoteIdentitiesAsync`, with one difference: each source's HR
+upload is a **full snapshot**. The upsert (re)activates everyone present, then anyone of that
+source missing from it gets `is_active = false`. Deactivation is scoped to sources that staged at
+least one row in the manifest, so a manifest with no HR people in it never deactivates anyone.
+Identities have no alias keys and no ingestion edges, so there's no `entity_alias` upkeep.
 
 This same shape (`PromoteAccountsAsync`/`PromoteGroupsAsync`/`PromoteAssetsAsync`/
 `PromoteEntitlementsAsync`) applies uniformly to all four entity kinds. `hash_version` is always
@@ -383,10 +395,8 @@ exit code (ECS) or a Lambda invocation error, for Step Functions to catch/escala
 status leaves the job/workflow in their in-flight (`"started"`) state and reports "in progress"
 via the step's own result (`GraphLoadPollResult.Outcome`/`IsInProgress`) rather than throwing —
 Step Functions is expected to wait and re-invoke this step later rather than the step blocking
-on its own. On the ECS/console entry point that "in progress" signal shows up as a distinct
-process exit code (`WorkflowHost.RetryLaterExitCode`, since ECS/Batch expose only the exit code
-to Step Functions); on the Lambda entry point it's just a field in the JSON response, since
-Lambda's return value is visible to Step Functions directly.
+on its own. That signal is a field in the JSON response, which is why this step runs on Lambda:
+Lambda's return value is visible to Step Functions directly, and `ecs:runTask.sync`'s is not.
 
 Vertex/edge ids follow one scheme (`{tenantId}:{entityType}:{id}`) with the tenant id baked
 into the address itself — structurally, a caller can't address a vertex without a tenant id.
@@ -486,7 +496,7 @@ nor retry/retrigger separation.
 ## 12. Where things live
 
 ```
-backend/workflows/Thor.Workflows.Ingestion/
+backend/workflows/ingestion/Thor.Workflows.Ingestion/
 ├── Program.cs                        entry point — registers the 4 steps
 ├── IngestionRequest.cs                shared input contract — extract-stage's two shapes (list vs. per-file) plus promote/graph-load-*
 ├── Steps/                             one class per THOR_STEP value
@@ -517,9 +527,11 @@ backend/workflows/Thor.Workflows.Ingestion/
 ├── Models/                            EdgeRef, ParsedAccount/Group/Asset/Entitlement, IngestBatch
 ├── Constants/                         RelTypes, ConnectorTypes, IngestionStatuses
 ├── Composition/TenantConnectionManagerFactory.cs
-├── Orchestration/ScanLifecycle.cs     Scan.ScanType lookup, manifest status updates
-└── Dockerfile                         single image, all 4 steps
+└── Orchestration/ScanLifecycle.cs     Scan.ScanType lookup, manifest status updates
 ```
+
+The image is built from `backend/workflows/Dockerfile`, shared by every workflow module and selected
+with `--build-arg WORKFLOW=Ingestion`. One image, all four steps; `THOR_STEP` picks which one runs.
 
 Shared dependencies: `backend/shared/Thor.DataLayer` (`TenantDbContext`, repositories, entity
 models), `backend/shared/Thor.Graph` (graph vertex/edge stores, `GraphIds`, bulk-load CSV writer

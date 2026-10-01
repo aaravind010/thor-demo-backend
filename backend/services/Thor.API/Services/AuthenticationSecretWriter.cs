@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using Amazon.SecretsManager;
 using Amazon.SecretsManager.Model;
+using Thor.DataConnectionManager.Secrets;
 
 namespace Thor.Api.Services;
 

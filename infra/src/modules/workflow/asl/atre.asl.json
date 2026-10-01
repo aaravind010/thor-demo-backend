@@ -1,0 +1,283 @@
+{
+  "Comment": "Thor ATRE (account type rule engine) workflow. Classifies the accounts in scope a wave at a time: a Distributed Map runs the wave's chunks, NextWave reads what they did and either builds the next wave or ends the run. Nothing counts the accounts up front - how far to go is discovered by going. Terraform substitutes the placeholders with templatefile; validate edits with: aws stepfunctions validate-state-machine-definition.",
+  "StartAt": "Envelope",
+  "States": {
+    "Envelope": {
+      "Type": "Pass",
+      "Parameters": {
+        "Request.$": "$"
+      },
+      "ResultPath": "$",
+      "Next": "StartRun"
+    },
+    "StartRun": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Comment": "Opens the run's workflow row, links it to the ingestion run for the same manifest, and hands back the first wave. The workflow-row bookkeeping is here rather than in the Map body because the Map runs many bodies at once and none of them knows it is the first or the last.",
+      "Parameters": {
+        "FunctionName": "${lambda_arn_start_run}",
+        "Payload.$": "$.Request"
+      },
+      "ResultSelector": {
+        "WaveIndex.$": "$.Payload.WaveIndex",
+        "Chunks.$": "$.Payload.Chunks",
+        "HasMore.$": "$.Payload.HasMore"
+      },
+      "ResultPath": "$.Wave",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "RecordFailure"
+        }
+      ],
+      "Next": "ClassifyWave"
+    },
+    "ClassifyWave": {
+      "Type": "Map",
+      "Label": "ClassifyWave",
+      "Comment": "Each item is a window - an offset and a limit - and the invocation reads its own rows for it, because a Map item cannot carry ten thousand account ids. The items arrive complete: StartRun and NextWave build each one with the run's identity already in it, so there is no ItemSelector here. That is deliberate - an ItemSelector would have to reach for $.Request.ScanManifestId and $.Request.RunId, and both are genuinely optional (ingestion starts ATRE with a manifest and no run id), while a reference path that resolves to nothing fails the whole execution with States.Runtime. MaxConcurrency is the connection dial, not a throughput one: each body opens a read and a write connection, so N concurrent bodies hold 2N through the RDS Proxy. Results come back inline rather than via a ResultWriter, because NextWave has to read the row counts to know whether the run is finished; five small objects per wave is well inside the state payload limit. A failed item IS tolerated, the way ingestion tolerates a bad file: the other chunks still classify their accounts and later waves still go out. What makes that safe is RecordChunkFailure writing the lost window down first, and the Failed flag on the tolerated result - without it the zero row count reads as 'ran off the end of the accounts' and the run would stop early, skipping far more than the chunk that failed.",
+      "ItemsPath": "$.Wave.Chunks",
+      "MaxConcurrency": ${map_max_concurrency},
+      "ResultSelector": {
+        "Results.$": "$[*].Payload"
+      },
+      "ResultPath": "$.WaveResult",
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "DISTRIBUTED",
+          "ExecutionType": "STANDARD"
+        },
+        "StartAt": "ClassifyChunk",
+        "States": {
+          "ClassifyChunk": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${lambda_arn_classify}",
+              "Payload.$": "$"
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "IntervalSeconds": 30,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "Comment": "ResultPath $.Error merges the error into the item, so the next state has both the window that was lost and why - which is the whole payload RecordChunkFailure needs.",
+                "ResultPath": "$.Error",
+                "Next": "RecordChunkFailure"
+              }
+            ],
+            "End": true
+          },
+          "RecordChunkFailure": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Comment": "Writes this chunk's window into the run's workflow.error before the run moves on without it. Tolerating a chunk without recording it would classify more accounts at the cost of nobody knowing which ones were skipped.",
+            "Parameters": {
+              "FunctionName": "${lambda_arn_record_chunk_failure}",
+              "Payload.$": "$"
+            },
+            "ResultPath": null,
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 2,
+                "BackoffRate": 2
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "Comment": "Failing to write the record must not fail the run - that would undo the tolerating this state exists to support. The window is then lost with only the CloudWatch log to show for it, which is the worst case here and the reason the retry above exists at all.",
+                "ResultPath": null,
+                "Next": "ClassifyChunkTolerated"
+              }
+            ],
+            "Next": "ClassifyChunkTolerated"
+          },
+          "ClassifyChunkTolerated": {
+            "Type": "Pass",
+            "Comment": "Wrapped in Payload so the Map's ResultSelector ($[*].Payload) picks a tolerated item up the same way it picks up a successful one. Without the wrapper the item would have no Payload field and would vanish from the results array entirely, and NextWave would never learn the chunk existed. Failed is what stops the planner reading the zero counts as 'ran off the end of the accounts'.",
+            "Parameters": {
+              "Payload": {
+                "Failed": true,
+                "Offset.$": "$.Offset"
+              }
+            },
+            "End": true
+          }
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "RecordFailure"
+        }
+      ],
+      "Next": "NextWave"
+    },
+    "NextWave": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Comment": "Sums the rows the wave actually read. A full wave might have been followed by more, so another goes out; a short one means the last chunk ran off the end. Touches no database - this is what replaces counting the scope up front. A Lambda rather than a Pass state only because Amazon States Language cannot sum an array. It is handed the whole Request rather than fields off it, both because it has to stamp the run's identity onto the next wave's Map items and because $.Request is one path that always resolves, whichever of the optional fields the caller sent.",
+      "Parameters": {
+        "FunctionName": "${lambda_arn_next_wave}",
+        "Payload": {
+          "Request.$": "$.Request",
+          "WaveIndex.$": "$.Wave.WaveIndex",
+          "Results.$": "$.WaveResult.Results"
+        }
+      },
+      "ResultSelector": {
+        "WaveIndex.$": "$.Payload.WaveIndex",
+        "Chunks.$": "$.Payload.Chunks",
+        "HasMore.$": "$.Payload.HasMore"
+      },
+      "ResultPath": "$.Wave",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "RecordFailure"
+        }
+      ],
+      "Next": "MoreWaves"
+    },
+    "MoreWaves": {
+      "Type": "Choice",
+      "Comment": "The loop. Each turn costs a handful of execution-history events, and a Standard workflow's history is capped at 25,000 - which is the real ceiling on one ATRE run, somewhere around three thousand waves. Past that the answer is a bigger wave or a bigger chunk, not a deeper loop.",
+      "Choices": [
+        {
+          "Variable": "$.Wave.HasMore",
+          "BooleanEquals": true,
+          "Next": "ClassifyWave"
+        }
+      ],
+      "Default": "Finalize"
+    },
+    "Finalize": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Comment": "Closes the run's workflow row. Reached only when every wave succeeded, which is why it is a state of its own rather than something the Map body does on its way out.",
+      "Parameters": {
+        "FunctionName": "${lambda_arn_finalize}",
+        "Payload.$": "$.Request"
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "RecordFailure"
+        }
+      ],
+      "Next": "WorkflowSucceeded"
+    },
+    "RecordFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Comment": "Closes the run's workflow row as failed. Here rather than in each step's own try/catch - the shape every ingestion step uses - because the failure ATRE is most likely to hit is a chunk exceeding the Lambda timeout, and a killed invocation runs no catch block. An out-of-memory kill and a Map item whose retries are exhausted are the same story. This state is the one place that sees all of them. It also leaves NextWave as pure arithmetic with no database of its own. Note this is the run dying, not a chunk failing - a chunk is tolerated and recorded by RecordChunkFailure inside the Map, and the run carries on. Retries are lighter than the rest of the definition on purpose: the run has already failed and every attempt here only delays saying so.",
+      "Parameters": {
+        "FunctionName": "${lambda_arn_record_failure}",
+        "Payload": {
+          "Request.$": "$.Request",
+          "Error.$": "$.Error"
+        }
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Comment": "Failing to record the failure must not swallow the failure. The run still ends in WorkflowFailed either way; only the workflow row is poorer for it, and the execution history still has the original error.",
+          "ResultPath": null,
+          "Next": "WorkflowFailed"
+        }
+      ],
+      "Next": "WorkflowFailed"
+    },
+    "WorkflowSucceeded": {
+      "Type": "Succeed"
+    },
+    "WorkflowFailed": {
+      "Type": "Fail",
+      "Error": "WorkflowFailed",
+      "Cause": "See the run's workflow row for which step failed and why - status 'failed', with the error in the error column. ATRE has no dead-letter queue on purpose: nothing redrives it, it is started by another workflow rather than by a queue, and a run that fails has a row of its own to say so."
+    }
+  }
+}

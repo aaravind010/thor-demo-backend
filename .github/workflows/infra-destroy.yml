@@ -21,9 +21,15 @@ on:
         type: string
         default: ""
 
-# One destroy per environment at a time; never cancels mid-run.
+# A destroy joins the same aws-<branch> group as infra.yml and deploy.yml — environment maps 1:1 to
+# branch here (validate-branch enforces it), so a destroy can no longer start while an apply or a
+# deploy is mid-flight. Previously they sat in different groups and only Terraform's state lock kept
+# them apart, which is what the force-unlock path below exists to clean up after.
+#
+# force-unlock is deliberately NOT in that group: it is the escape hatch for a stuck lock, so it must
+# never queue behind the run that is stuck.
 concurrency:
-  group: infra-destroy-${{ inputs.environment }}
+  group: ${{ inputs.lock_id != '' && format('force-unlock-{0}', inputs.environment) || format('aws-{0}', inputs.environment) }}
   cancel-in-progress: false
 
 permissions:
@@ -31,7 +37,6 @@ permissions:
   contents: read
 
 env:
-  DOTNET_VERSION: "10.0.100"
   TF_TOKEN_sphereco_jfrog_io: ${{ secrets.jf_api_thor }}
   JFROG_HOSTNAME: ${{ vars.JFROG_HOSTNAME }}
   JFROG_STATE_BACKEND_REPOSITORY: ${{ vars.JFROG_STATE_BACKEND_REPOSITORY }}
@@ -48,6 +53,7 @@ jobs:
   validate-branch:
     if: inputs.lock_id == ''
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     # workflow_dispatch allows any branch — enforce infra.yml's dev/qa <-> branch mapping.
     steps:
       - name: Enforce dev/qa branch mapping
@@ -65,6 +71,7 @@ jobs:
   plan-destroy:
     needs: validate-branch
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     # No environment: block here — read-only, nothing to gate. Its logs are what the approver
     # reviews before approving destroy-terragrunt below.
     defaults:
@@ -75,9 +82,11 @@ jobs:
 
       # root.hcl's before_hook runs dotnet publish before plan/apply/destroy alike — needs the SDK
       # first, same reason plan-terragrunt in infra.yml does this.
+      # global-json-file, not a literal — see infra.yml. The previous 10.0.100 could not satisfy
+      # global.json's 10.0.300 floor under rollForward: latestFeature.
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
+          global-json-file: global.json
 
       - uses: ./.github/actions/terragrunt-setup
         with:
@@ -103,7 +112,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           shopt -s nullglob
-          artifacts=(backend/functions/*/*.zip backend/workflows/*/*.zip backend/functions/*/publish backend/workflows/*/publish)
+          artifacts=(backend/functions/*/*.zip backend/functions/*/publish)
           if [ "${#artifacts[@]}" -gt 0 ]; then
             tar -czf /tmp/lambda-zips.tar.gz "${artifacts[@]}"
           else
@@ -123,6 +132,7 @@ jobs:
     runs-on: ubuntu-latest
     # Shared dev/qa Environments with infra.yml — only qa requires review.
     environment: ${{ inputs.environment }}
+    timeout-minutes: 90
     defaults:
       run:
         working-directory: infra/envs/${{ inputs.environment }}
@@ -170,6 +180,7 @@ jobs:
   force-unlock:
     if: inputs.lock_id != ''
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # Shared dev/qa Environment with the destroy path above — qa still requires review for any
     # state-mutating operation, even one that isn't destroying resources.
     environment: ${{ inputs.environment }}

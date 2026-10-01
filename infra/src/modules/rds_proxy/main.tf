@@ -92,6 +92,12 @@ data "aws_iam_policy_document" "rds_proxy_permissions" {
     actions   = ["rds-db:connect"]
     resources = ["arn:aws:rds-db:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:dbuser:${var.aurora_cluster_resource_id}/*"]
   }
+
+  # Proxy needs this to read the secret AWS requires below, unused as it is.
+  statement {
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = [var.master_user_secret_arn]
+  }
 }
 
 resource "aws_iam_role_policy" "rds_proxy_permissions" {
@@ -100,9 +106,7 @@ resource "aws_iam_role_policy" "rds_proxy_permissions" {
   policy = data.aws_iam_policy_document.rds_proxy_permissions.json
 }
 
-# default_auth_scheme = IAM_AUTH is end-to-end IAM: both client->proxy and proxy->DB legs use
-# IAM tokens, so there is no Secrets Manager secret and no per-secret ceiling. Requires a
-# terraform-provider-aws release that supports the argument (validated in CI on plan).
+# iam_auth below is the real switch; default_auth_scheme was a no-op.
 resource "aws_db_proxy" "rds_proxy" {
   name                   = local.name_prefix
   engine_family          = "POSTGRESQL"
@@ -110,7 +114,13 @@ resource "aws_db_proxy" "rds_proxy" {
   vpc_subnet_ids         = var.private_subnet_ids
   vpc_security_group_ids = [aws_security_group.rds_proxy_security_group.id]
   require_tls            = true
-  default_auth_scheme    = "IAM_AUTH"
+
+  # No username = applies to every DB user. secret_arn is required by AWS but unused (IAM only).
+  auth {
+    auth_scheme = "SECRETS"
+    iam_auth    = "REQUIRED"
+    secret_arn  = var.master_user_secret_arn
+  }
 
   tags = var.tags
 

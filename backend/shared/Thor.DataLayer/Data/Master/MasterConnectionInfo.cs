@@ -2,8 +2,8 @@ namespace Thor.DataLayer.Data;
 
 /// <summary>
 /// Fully-resolved connection parameters for the Master metadata DB (see ADR §6.2).
-/// Unlike <see cref="TenantConnectionInfo"/>, there is exactly one Master DB — callers
-/// resolve these values once, from their own configuration, not per request.
+/// Unlike tenant databases, there is exactly one Master DB — callers resolve these values
+/// once, from their own configuration, not per request.
 /// </summary>
 /// <remarks>
 /// Authentication is always RDS IAM: there is no password anywhere. The factory mints a

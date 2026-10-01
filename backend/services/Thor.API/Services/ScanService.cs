@@ -42,6 +42,8 @@ public sealed class ScanService(ITenantConnectionManager tenantConnectionManager
         var tasks = new List<ScanTask>();
         var taskResponses = new List<ScanTaskResponse>();
 
+        var now = DateTime.UtcNow;
+        
         foreach (var source in sources)
         {
             var task = new ScanTask
@@ -50,6 +52,8 @@ public sealed class ScanService(ITenantConnectionManager tenantConnectionManager
                 ScanId = scan.Id,
                 SourceId = source.Id,
                 Status = ScanTaskStatus.Pending,
+                CreatedAt = now,
+                RetryCount = 0,
             };
 
             tasks.Add(task);

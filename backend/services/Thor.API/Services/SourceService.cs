@@ -8,7 +8,7 @@ using Thor.DataLayer.Repositories;
 namespace Thor.Api.Services;
 
 /// <summary>
-/// Backs <c>POST /source</c> and <c>GET /source</c>: validates the requested connector type
+/// Backs <c>POST /source</c>, <c>GET /source</c> and <c>GET /source/{id}</c>: validates the requested connector type
 /// against the Master metadata DB, then creates or lists <see cref="Source"/> rows in the
 /// caller's tenant database.
 /// </summary>
@@ -56,6 +56,13 @@ public sealed class SourceService(
 
         var sources = await sourceRepository.GetAllAsync(cancellationToken);
         return sources.Select(ToResponse).ToList();
+    }
+
+    public async Task<SourceResponse?> GetAsync(Guid tenantId, Guid id, CancellationToken cancellationToken)
+    {
+        using var tenantDb = await tenantConnectionManager.GetTenantDbContextAsync(tenantId, cancellationToken);
+        var source = await new SourceRepository(tenantDb).GetByIdAsync(id, cancellationToken);
+        return source is null ? null : ToResponse(source);
     }
 
     private static SourceResponse ToResponse(Source source) => new(

@@ -13,6 +13,12 @@ variable "vpc_cidr" {
   description = "CIDR of the VPC — scopes the security group's egress to VPC-only, same convention as modules/aurora and modules/ecs"
 }
 
+variable "s3_prefix_list_id" {
+  type        = string
+  default     = ""
+  description = "module.network's S3 gateway endpoint prefix list id (aws_vpc_endpoint.s3.prefix_list_id) — adds an egress rule for it so the cluster can reach S3 for bulk loads despite vpc_cidr-scoped egress, since S3's IP range isn't part of the VPC CIDR. \"\" skips the rule (e.g. VPC endpoints disabled)."
+}
+
 variable "private_subnet_ids" {
   type        = list(string)
   description = "Private subnets for the Neptune subnet group (needs at least 2, in different AZs)"
@@ -32,13 +38,13 @@ variable "create_ingress" {
 variable "create_bulk_load_role" {
   type        = bool
   default     = false
-  description = "Whether to create the IAM role the cluster assumes for bulk loads (aws_neptune_cluster.iam_roles) — wired to enable_ingestion at the root, since modules/ingestion's graph-load-start step is what starts loads. Its own flag rather than inferred from bulk_load_bucket_arn, which may be unknown until apply and so can't drive count."
+  description = "Whether to create the IAM role the cluster assumes for bulk loads (aws_neptune_cluster.iam_roles). Wired at the root to whether the bulk-load workflow is *enabled*, not merely named: the role is validated as it attaches to the cluster, and there is nothing to validate against until the graph-load bucket exists. Its own flag rather than inferred from bulk_load_bucket_arns, which may be unknown until apply and so can't drive count."
 }
 
-variable "bulk_load_bucket_arn" {
-  type        = string
-  default     = ""
-  description = "The bucket the bulk-load role may read CSVs from — modules/ingestion's bucket. Only used when create_bulk_load_role is true."
+variable "bulk_load_bucket_arns" {
+  type        = list(string)
+  default     = []
+  description = "The buckets the bulk-load role may read CSVs from — the graph-load bucket of each enabled workflow named by the root's neptune_bulk_load_workflows. Only used when create_bulk_load_role is true."
 }
 
 variable "iam_permissions_boundary_arn" {

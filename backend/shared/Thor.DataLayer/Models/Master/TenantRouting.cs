@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
+using Microsoft.EntityFrameworkCore;
 
 namespace Thor.DataLayer.Models;
 
@@ -7,8 +8,13 @@ namespace Thor.DataLayer.Models;
 /// Routing and infra metadata for a tenant in the Master metadata DB (see ADR §6.2) —
 /// which Aurora cluster/database holds the tenant's data, its Secrets Manager credential
 /// reference, and its Cognito user pool. One row per <see cref="Tenant"/>.
+/// <para>
+/// <see cref="UserPoolId"/> is unique: one user pool per tenant (ADR §5), and the Lambda
+/// authorizer resolves a Cognito token's tenant from the pool in its <c>iss</c> claim.
+/// </para>
 /// </summary>
 [Table("tenant_routing", Schema = "auth")]
+[Index(nameof(UserPoolId), IsUnique = true)]
 public sealed class TenantRouting
 {
     // TenantId is both the primary key and the FK to Tenant — a shared-key one-to-one.

@@ -12,8 +12,7 @@ Versioning is handled by `Asp.Versioning.Mvc`, configured in `Program.cs`.
 - **Scheme:** URL segment (`/v{version}/...`), e.g. `/v1/tasks`, `/v2/tasks`.
 - **Default version:** `1.0` — assumed when no version segment is present.
 - **Supported versions:** `1.0` (`Controllers/V1`), `2.0` (`Controllers/V2`).
-- Not all endpoints are versioned — e.g. `uploads` (`Controllers/V1/UploadsController.cs`) has no
-  version segment and is served regardless of API version.
+- All endpoints carry the version segment.
 
 ### Response headers
 
@@ -91,5 +90,8 @@ apply registered), patches only the image, and updates the service. Three conseq
   `.pem`, apply, then deploy; thor-api, task-api and the authorizer must all end up on the same
   keypair or connector tokens stop verifying somewhere.
 
-A deploy of any one service also syncs its two siblings, so one deploy rolls thor-api, task-api and
-intelligence-engine onto their newest revisions together.
+Rolling all three onto a freshly seeded keypair is the `Roll services` workflow
+(`.github/workflows/roll-services.yml`, run manually against one environment). It forces a new
+deployment on thor-api, task-api and intelligence-engine without changing their images — the secrets
+arrive as `valueFrom` ARNs, so ECS re-resolves them when the new tasks start. An ordinary deploy no
+longer syncs siblings; see `.github/actions/ecs-deploy/action.yml` for why that was removed.

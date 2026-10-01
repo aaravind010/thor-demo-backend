@@ -7,6 +7,8 @@ namespace Thor.DataLayer.Models;
 /// A connector-specific authentication scheme (e.g. API key, OAuth) that
 /// <see cref="AuthenticationField"/> rows are defined against. Lives in the
 /// Master metadata DB — shared, connector-level reference data, not per-tenant.
+/// Which connectors a type may be used with is held in
+/// <see cref="AuthenticationTypeConnectorType"/>; one type can support many connectors.
 /// </summary>
 [Table("authentication_types")]
 public sealed class AuthenticationType
@@ -18,12 +20,9 @@ public sealed class AuthenticationType
     [Column("name")]
     public string Name { get; set; } = null!;
 
-    [Column("connector_type_id")]
-    [ForeignKey(nameof(ConnectorType))]
-    public short ConnectorTypeId { get; set; }
-
-    public ConnectorType ConnectorType { get; set; } = null!;
-
     private readonly List<AuthenticationField> _authenticationFields = new();
     public IEnumerable<AuthenticationField> AuthenticationFields => _authenticationFields;
+
+    private readonly List<AuthenticationTypeConnectorType> _connectorTypes = new();
+    public IEnumerable<AuthenticationTypeConnectorType> ConnectorTypes => _connectorTypes;
 }

@@ -4,12 +4,10 @@ namespace Thor.DataLayer.Data;
 
 /// <summary>
 /// Creates a <see cref="TenantDbContext"/> bound to a specific tenant's database, given
-/// already-resolved connection parameters.
+/// an already-open connection.
 /// </summary>
 public interface ITenantDbContextFactory
 {
-    TenantDbContext Create(TenantConnectionInfo connectionInfo);
-
     /// <summary>
     /// Wraps an already-open connection (e.g. one resolved, opened, and tenant-validated by a
     /// connection manager) in a <see cref="TenantDbContext"/>. When <paramref name="contextOwnsConnection"/>

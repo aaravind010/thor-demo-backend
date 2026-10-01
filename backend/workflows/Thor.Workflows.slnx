@@ -1,0 +1,20 @@
+<Solution>
+  <Folder Name="/platform/">
+    <Project Path="platform/Thor.Workflows.Abstractions/Thor.Workflows.Abstractions.csproj" />
+    <Project Path="platform/Thor.Workflows.Abstractions.Tests/Thor.Workflows.Abstractions.Tests.csproj" />
+    <Project Path="platform/Thor.Workflows.Hosting/Thor.Workflows.Hosting.csproj" />
+    <Project Path="platform/Thor.Workflows.Hosting.Tests/Thor.Workflows.Hosting.Tests.csproj" />
+  </Folder>
+  <Folder Name="/ingestion/">
+    <Project Path="ingestion/Thor.Workflows.Ingestion/Thor.Workflows.Ingestion.csproj" />
+    <Project Path="ingestion/Thor.Workflows.Ingestion.Tests/Thor.Workflows.Ingestion.Tests.csproj" />
+  </Folder>
+  <Folder Name="/atre/">
+    <Project Path="atre/Thor.Workflows.Atre/Thor.Workflows.Atre.csproj" />
+    <Project Path="atre/Thor.Workflows.Atre.Tests/Thor.Workflows.Atre.Tests.csproj" />
+  </Folder>
+  <Folder Name="/ownership/">
+    <Project Path="ownership/Thor.Workflows.Ownership/Thor.Workflows.Ownership.csproj" />
+    <Project Path="ownership/Thor.Workflows.Ownership.Tests/Thor.Workflows.Ownership.Tests.csproj" />
+  </Folder>
+</Solution>

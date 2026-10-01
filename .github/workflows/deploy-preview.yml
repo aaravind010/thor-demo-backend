@@ -13,6 +13,7 @@ on:
 jobs:
   preview:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         # inputs.service is the Terraform/ECS service key (thor-api/task-api/intelligence-engine); the actual
@@ -22,22 +23,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # See _deploy-core.yml: pin from global.json, never a literal version or the runner's default.
+      - uses: actions/setup-dotnet@v4
+        if: inputs.service != 'intelligence-engine'
+        with:
+          global-json-file: global.json
+
+      # Compile check only. Tests moved to test.yml, which runs every project in the repo and blocks —
+      # the step that used to be here discovered projects with `find -iname '*.test.csproj'` (which
+      # never matched `*.Tests.csproj`) and was continue-on-error, so it asserted nothing.
       - name: Restore & build (.NET)
         if: inputs.service != 'intelligence-engine'
         run: |
           dotnet restore
           dotnet build --no-restore -c Release -p:OpenApiGenerateDocumentsOnBuild=false
-
-      # continue-on-error: fast feedback, not a gate.
-      - name: Run unit tests (.NET)
-        if: inputs.service != 'intelligence-engine'
-        continue-on-error: true
-        run: |
-          if find . -iname '*.test.csproj' | grep -q .; then
-            dotnet test --no-build -c Release
-          else
-            echo "No test project found, skipping."
-          fi
 
       - name: Install uv (Python)
         if: inputs.service == 'intelligence-engine'
@@ -47,16 +46,8 @@ jobs:
         if: inputs.service == 'intelligence-engine'
         run: uv sync --frozen
 
+      # Codegen is the compile check for this service — it fails if proto/ and the Python side drift.
+      # pytest moved to test.yml.
       - name: Generate gRPC stubs (Python)
         if: inputs.service == 'intelligence-engine'
         run: uv run python scripts/generate_grpc.py
-
-      - name: Run unit tests (Python)
-        if: inputs.service == 'intelligence-engine'
-        continue-on-error: true
-        run: |
-          if [ -d tests ] || ls test_*.py >/dev/null 2>&1; then
-            uv run pytest
-          else
-            echo "No tests found, skipping."
-          fi

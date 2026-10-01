@@ -101,10 +101,8 @@ resource "aws_security_group" "provisioning" {
 
   tags = merge(var.tags, { Name = "${local.name_prefix}-sg" })
 
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
   lifecycle {
     create_before_destroy = true
-    ignore_changes        = [tags, tags_all]
   }
 }
 
@@ -120,11 +118,6 @@ resource "aws_vpc_security_group_ingress_rule" "provisioning_to_aurora" {
   ip_protocol                  = "tcp"
 
   tags = merge(var.tags, { Name = "${local.name_prefix}-aurora-ingress" })
-
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
-  lifecycle {
-    ignore_changes = [tags, tags_all]
-  }
 }
 
 # --- Lambda IAM: one role per function, least-privilege ---
@@ -145,11 +138,6 @@ resource "aws_iam_role" "fn" {
   assume_role_policy   = data.aws_iam_policy_document.lambda_assume.json
   permissions_boundary = var.iam_permissions_boundary_arn
   tags                 = var.tags
-
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
-  lifecycle {
-    ignore_changes = [tags, tags_all]
-  }
 }
 
 resource "aws_cloudwatch_log_group" "fn" {
@@ -158,11 +146,6 @@ resource "aws_cloudwatch_log_group" "fn" {
   name              = "/aws/lambda/${local.name_prefix}-${each.key}"
   retention_in_days = 30
   tags              = var.tags
-
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
-  lifecycle {
-    ignore_changes = [tags, tags_all]
-  }
 }
 
 # Base policy (all functions): write to own log group only — replaces AWSLambdaBasicExecutionRole.
@@ -315,11 +298,6 @@ resource "aws_lambda_function" "fn" {
   depends_on = [aws_cloudwatch_log_group.fn, aws_iam_role_policy.logs]
 
   tags = var.tags
-
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
-  lifecycle {
-    ignore_changes = [tags, tags_all]
-  }
 }
 
 # --- Step Functions state machine ---
@@ -338,11 +316,6 @@ resource "aws_iam_role" "sfn" {
   assume_role_policy   = data.aws_iam_policy_document.sfn_assume.json
   permissions_boundary = var.iam_permissions_boundary_arn
   tags                 = var.tags
-
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
-  lifecycle {
-    ignore_changes = [tags, tags_all]
-  }
 }
 
 resource "aws_iam_role_policy" "sfn_invoke" {
@@ -373,11 +346,6 @@ resource "aws_sfn_state_machine" "provisioning" {
   })
 
   tags = var.tags
-
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
-  lifecycle {
-    ignore_changes = [tags, tags_all]
-  }
 }
 
 # The workflow is request-driven and terminates in a Fail state on error (the tenant stays

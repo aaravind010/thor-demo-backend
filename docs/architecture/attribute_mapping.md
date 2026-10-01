@@ -5,7 +5,7 @@
 > raw export feeds into `staging_account` / `staging_grp` / `staging_asset` /
 > `staging_entitlement`.
 >
-> Reconstructed from `backend/workflows/Thor.Workflows.Ingestion/AttributeMapping/Config/*.json`
+> Reconstructed from `backend/workflows/ingestion/Thor.Workflows.Ingestion/AttributeMapping/Config/*.json`
 > and the three normalizers (`AdNormalizer.cs`, `CyberArkNormalizer.cs`,
 > `WindowsNormalizer.cs`) — treat it as a current-behavior reference, not a spec; if either
 > drifts from this doc, the code wins and this doc should be updated.

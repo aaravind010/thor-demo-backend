@@ -1,0 +1,62 @@
+{
+  "thor-api": {
+    "kind": "core",
+    "source_dir": "backend/services/Thor.API",
+    "runtime": "dotnet",
+    "source_paths": [
+      "backend/services/Thor.API/**",
+      "backend/shared/**",
+      "proto/**"
+    ],
+    "notes": "proto/ generates each side of the Thor.Api <-> intelligence-engine gRPC contract at build time (Grpc.Tools here, scripts/generate_grpc.py there), so a contract-only change has to rebuild both or the two sides silently drift apart."
+  },
+  "task-api": {
+    "kind": "core",
+    "source_dir": "backend/services/Thor.TaskAPI",
+    "runtime": "dotnet",
+    "source_paths": [
+      "backend/services/Thor.TaskAPI/**",
+      "backend/shared/**"
+    ]
+  },
+  "intelligence-engine": {
+    "kind": "core",
+    "source_dir": "backend/services/Thor.IntelligenceEngine",
+    "runtime": "python",
+    "source_paths": [
+      "backend/services/Thor.IntelligenceEngine/**",
+      "proto/**"
+    ],
+    "notes": "No backend/shared/** - that is .NET-only code this Python service never builds against."
+  },
+  "workflow-ingestion": {
+    "kind": "workflow",
+    "workflow": "ingestion",
+    "project": "Ingestion",
+    "source_paths": [
+      "backend/workflows/**",
+      "backend/shared/**"
+    ],
+    "notes": "One image serves every step of the workflow, and the whole backend/workflows/ tree goes into it - platform/ as much as ingestion/ - so there is nothing finer to filter on."
+  },
+  "workflow-atre": {
+    "kind": "workflow",
+    "workflow": "atre",
+    "project": "Atre",
+    "source_paths": [
+      "backend/workflows/**",
+      "backend/shared/**"
+    ],
+    "notes": "Same filter as workflow-ingestion, and deliberately not narrowed to backend/workflows/atre/**: both images are built from the same Dockerfile over the same context and both carry platform/ and shared/, so a change to either rebuilds both. Narrowing this would let a platform change ship to one workflow and not the other."
+  },
+  "workflow-ownership": {
+    "kind": "workflow",
+    "workflow": "ownership",
+    "project": "Ownership",
+    "source_paths": [
+      "backend/workflows/**",
+      "backend/shared/**"
+    ],
+    "notes": "Same filter as workflow-ingestion and workflow-atre, for workflow-atre's reason: every workflow image is built from the same Dockerfile over the same context, so a platform/ or shared/ change must rebuild all of them."
+  }
+}

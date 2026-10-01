@@ -1,0 +1,422 @@
+{
+  "Comment": "Thor Ownership workflow. Proposes an owning identity for accounts, then groups, then assets - three phases in that order, each a loop of waves like ATRE's: a Distributed Map runs a wave's chunks and NextWave reads what they did to build the next wave, the next phase's first, or nothing. Each phase opens with Walk, which stages the phase's walk-rule candidates before any chunk votes. After the last phase the run's winners are bulk-loaded into Neptune as OWNED_BY edges. Started by ingestion, or by a caller with a RunId and no manifest. Terraform substitutes the placeholders with templatefile; validate edits with: aws stepfunctions validate-state-machine-definition.",
+  "StartAt": "Envelope",
+  "States": {
+    "Envelope": {
+      "Type": "Pass",
+      "Parameters": {
+        "Request.$": "$"
+      },
+      "ResultPath": "$",
+      "Next": "StartRun"
+    },
+    "StartRun": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Comment": "Validates the request, opens the run's workflow row, links it to the ingestion run for the same manifest, seeds the rule catalog, and hands back the account phase's first wave. Once-per-run work lives here rather than in the Map body because the Map runs many bodies at once and none of them knows it is the first.",
+      "Parameters": {
+        "FunctionName": "${lambda_arn_start_run}",
+        "Payload.$": "$.Request"
+      },
+      "ResultSelector": {
+        "EntityType.$": "$.Payload.EntityType",
+        "WaveIndex.$": "$.Payload.WaveIndex",
+        "Chunks.$": "$.Payload.Chunks",
+        "HasMore.$": "$.Payload.HasMore",
+        "PhaseStart.$": "$.Payload.PhaseStart"
+      },
+      "ResultPath": "$.Wave",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "RecordFailure"
+        }
+      ],
+      "Next": "Walk"
+    },
+    "Walk": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Comment": "Propagates owners down the hierarchies the phase's walk rules follow and stages each entity's nearest owned ancestor, so the traversal runs once per phase instead of once per chunk. A hierarchy can be deeper than one invocation finishes, so the step stops on a time budget and answers IsInProgress; WalkCheck invokes it again and it resumes from the deepest staged level. A retry after a timeout resumes the same way. A phase with no walk rules answers done at once.",
+      "Parameters": {
+        "FunctionName": "${lambda_arn_walk}",
+        "Payload": {
+          "Request.$": "$.Request",
+          "EntityType.$": "$.Wave.EntityType"
+        }
+      },
+      "ResultSelector": {
+        "IsInProgress.$": "$.Payload.IsInProgress"
+      },
+      "ResultPath": "$.Walk",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "RecordFailure"
+        }
+      ],
+      "Next": "WalkCheck"
+    },
+    "WalkCheck": {
+      "Type": "Choice",
+      "Comment": "No Wait between turns: an in-progress walk has just spent its whole budget working, so there is nothing to wait for.",
+      "Choices": [
+        {
+          "Variable": "$.Walk.IsInProgress",
+          "BooleanEquals": true,
+          "Next": "Walk"
+        }
+      ],
+      "Default": "VoteWave"
+    },
+    "VoteWave": {
+      "Type": "Map",
+      "Label": "VoteWave",
+      "Comment": "Each item is a window of one phase's in-scope entities - an offset and a limit - and the invocation reads its own rows for it. The items arrive complete from StartRun and NextWave, run identity and resolved scope included, so there is no ItemSelector: ScanManifestId and RunId are each optional, and a reference path that resolves to nothing fails the execution with States.Runtime. MaxConcurrency is the connection dial: each body opens a read and a write connection. Results come back inline because NextWave has to read the row counts. A failed item is tolerated, as in ATRE: RecordChunkFailure writes the lost window down first, and the Failed flag stops the planner reading its zero count as the end of the phase.",
+      "ItemsPath": "$.Wave.Chunks",
+      "MaxConcurrency": ${map_max_concurrency},
+      "ResultSelector": {
+        "Results.$": "$[*].Payload"
+      },
+      "ResultPath": "$.WaveResult",
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "DISTRIBUTED",
+          "ExecutionType": "STANDARD"
+        },
+        "StartAt": "VoteChunk",
+        "States": {
+          "VoteChunk": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${lambda_arn_vote}",
+              "Payload.$": "$"
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "IntervalSeconds": 30,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "Comment": "ResultPath $.Error merges the error into the item, so the next state has both the window that was lost and why.",
+                "ResultPath": "$.Error",
+                "Next": "RecordChunkFailure"
+              }
+            ],
+            "End": true
+          },
+          "RecordChunkFailure": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Comment": "Writes this chunk's window into the run's workflow.error before the run moves on without it.",
+            "Parameters": {
+              "FunctionName": "${lambda_arn_record_chunk_failure}",
+              "Payload.$": "$"
+            },
+            "ResultPath": null,
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 2,
+                "BackoffRate": 2
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "Comment": "Failing to write the record must not fail the run - that would undo the tolerating this state exists to support.",
+                "ResultPath": null,
+                "Next": "VoteChunkTolerated"
+              }
+            ],
+            "Next": "VoteChunkTolerated"
+          },
+          "VoteChunkTolerated": {
+            "Type": "Pass",
+            "Comment": "Wrapped in Payload so the Map's ResultSelector ($[*].Payload) picks a tolerated item up the same way it picks up a successful one.",
+            "Parameters": {
+              "Payload": {
+                "Failed": true,
+                "Offset.$": "$.Offset",
+                "EntityType.$": "$.EntityType"
+              }
+            },
+            "End": true
+          }
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "RecordFailure"
+        }
+      ],
+      "Next": "NextWave"
+    },
+    "NextWave": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Comment": "Sums the rows the wave read. A full wave might be followed by more of the same phase; a short one ends the phase, and the next phase's first wave comes back with PhaseStart set. Touches no database. Handed the whole Request because it stamps the run's identity onto the next wave's items, and $.Request always resolves whichever optional fields the caller sent.",
+      "Parameters": {
+        "FunctionName": "${lambda_arn_next_wave}",
+        "Payload": {
+          "Request.$": "$.Request",
+          "EntityType.$": "$.Wave.EntityType",
+          "WaveIndex.$": "$.Wave.WaveIndex",
+          "Results.$": "$.WaveResult.Results"
+        }
+      },
+      "ResultSelector": {
+        "EntityType.$": "$.Payload.EntityType",
+        "WaveIndex.$": "$.Payload.WaveIndex",
+        "Chunks.$": "$.Payload.Chunks",
+        "HasMore.$": "$.Payload.HasMore",
+        "PhaseStart.$": "$.Payload.PhaseStart"
+      },
+      "ResultPath": "$.Wave",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "RecordFailure"
+        }
+      ],
+      "Next": "MoreWaves"
+    },
+    "MoreWaves": {
+      "Type": "Choice",
+      "Comment": "The loop. Choices are tried in order: no more waves ends matching; a wave that opens a phase walks first; anything else is another wave of the same phase. Each turn costs a handful of execution-history events against the 25,000 cap - the answer to a tenant that approaches it is a bigger chunk, not a deeper loop.",
+      "Choices": [
+        {
+          "Variable": "$.Wave.HasMore",
+          "BooleanEquals": false,
+          "Next": "GraphLoadStart"
+        },
+        {
+          "Variable": "$.Wave.PhaseStart",
+          "BooleanEquals": true,
+          "Next": "Walk"
+        }
+      ],
+      "Default": "VoteWave"
+    },
+    "GraphLoadStart": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Comment": "Writes this run's rank-1 winners to Ownership's graph-load bucket as identity vertices and OWNED_BY edges, and starts a Neptune bulk load. Postgres is the system of record; this is the projection graph traversals read. Starts nothing when the run found no winners.",
+      "Parameters": {
+        "FunctionName": "${lambda_arn_graph_load_start}",
+        "Payload.$": "$.Request"
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "RecordFailure"
+        }
+      ],
+      "Next": "GraphLoadPoll"
+    },
+    "GraphLoadPoll": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Comment": "Checks the load once per invocation. A failed load, or one that completed with row errors, throws to RecordFailure.",
+      "Parameters": {
+        "FunctionName": "${lambda_arn_graph_load_poll}",
+        "Payload.$": "$.Request"
+      },
+      "ResultSelector": {
+        "Outcome.$": "$.Payload.Outcome",
+        "IsInProgress.$": "$.Payload.IsInProgress"
+      },
+      "ResultPath": "$.Poll",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "RecordFailure"
+        }
+      ],
+      "Next": "GraphLoadPollCheck"
+    },
+    "GraphLoadPollCheck": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.Poll.IsInProgress",
+          "BooleanEquals": true,
+          "Next": "GraphLoadPollWait"
+        }
+      ],
+      "Default": "Finalize"
+    },
+    "GraphLoadPollWait": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "GraphLoadPoll"
+    },
+    "Finalize": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Comment": "Closes the run's workflow row - completed_with_errors if any chunk was tolerated - and drops the walk rows the run staged.",
+      "Parameters": {
+        "FunctionName": "${lambda_arn_finalize}",
+        "Payload.$": "$.Request"
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "RecordFailure"
+        }
+      ],
+      "Next": "WorkflowSucceeded"
+    },
+    "RecordFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Comment": "Closes the run's workflow row as failed. Here rather than in each step's own try/catch because a Lambda killed by its timeout or by running out of memory runs no catch block; this state is the one place that sees every way the run can die. This is the run dying, not a chunk failing - a chunk is tolerated inside the Map.",
+      "Parameters": {
+        "FunctionName": "${lambda_arn_record_failure}",
+        "Payload": {
+          "Request.$": "$.Request",
+          "Error.$": "$.Error"
+        }
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Comment": "Failing to record the failure must not swallow the failure.",
+          "ResultPath": null,
+          "Next": "WorkflowFailed"
+        }
+      ],
+      "Next": "WorkflowFailed"
+    },
+    "WorkflowSucceeded": {
+      "Type": "Succeed"
+    },
+    "WorkflowFailed": {
+      "Type": "Fail",
+      "Error": "WorkflowFailed",
+      "Cause": "See the run's workflow row for which step failed and why - status 'failed', with the error in the error column. Ownership has no dead-letter queue, for the reasons ATRE has none: nothing redrives it, it is started by another workflow rather than a queue, and a failed run has a row of its own to say so."
+    }
+  }
+}

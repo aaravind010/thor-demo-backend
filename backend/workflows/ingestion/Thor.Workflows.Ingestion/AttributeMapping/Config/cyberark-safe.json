@@ -1,0 +1,14 @@
+{
+  "connector": "CyberArk",
+  "entityKind": "Asset",
+  "columnMappings": {
+    "display_name": "SafeName"
+  },
+  "hashFields": [
+    "connector_type",
+    "native_id",
+    "asset_type",
+    "display_name",
+    "full_path"
+  ]
+}

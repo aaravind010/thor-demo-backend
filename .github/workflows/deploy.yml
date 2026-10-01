@@ -1,9 +1,19 @@
 name: Deploy
 
-# Entry point — decides environment/mode/which service(s) changed, then calls _deploy-core.yml.
+# Entry point — decides environment/mode/which service(s) changed, then calls _deploy-core.yml for
+# ECS services and _deploy-workflow.yml for workflow modules.
 # push to dev -> deploy (build from source); push to qa/main -> promote (reads the manifest carried by the
 # dev->qa / qa->main promotion PR); pull_request -> preview only, via deploy-preview.yml; workflow_dispatch ->
 # manual deploy/rollback. dorny/paths-filter picks source filters on push to dev, manifest filters on push to qa/main.
+#
+# Every service is declared once, in deploy/services.json. Nothing here is per-service: the path
+# filters are generated from it, and the deploy/preview jobs are matrices over what changed. The one
+# exception GitHub forces is the workflow_dispatch dropdown below, whose `options` cannot be an
+# expression — adding a service still means adding it there.
+#
+# Manifests are not written here. Each reusable workflow records its own deploy/<service>/image.json
+# in a `record` job, which is what allows the deploys to be matrices: a matrix job publishes a single
+# `outputs` object, so a caller cannot ask each entry what digest it produced.
 
 on:
   push:
@@ -19,38 +29,77 @@ on:
         type: choice
         options: [dev, qa, prod]
       service:
-        description: "Service to deploy"
+        description: "Service or workflow module to deploy"
         required: true
         type: choice
-        options: [thor-api, task-api, intelligence-engine]
+        # workflow-* entries route to _deploy-workflow.yml instead of _deploy-core.yml; see deploy-manual
+        # below. The name matches the manifest directory (deploy/workflow-ingestion/), not the ECR repo.
+        options: [thor-api, task-api, intelligence-engine, workflow-ingestion, workflow-atre, workflow-ownership]
       image_digest:
-        description: "JFrog digest to deploy (blank = normal resolution for this environment's trigger)"
+        description: "JFrog digest to deploy (blank = normal resolution for this environment's trigger). qa/prod only — dev always builds from source."
         required: false
         type: string
 
 # Permissions don't propagate through a workflow_call boundary — re-declared here for _deploy-core.yml's use.
 # pull-requests: read — dorny/paths-filter falls back to the GitHub API to list changed files on pull_request events.
+# actions: read — infra-gate lists infra.yml's runs for this commit.
 permissions:
   id-token: write
   contents: write
   pull-requests: read
+  actions: read
+
+# Deliberately shares infra.yml's `aws-<branch>` group. A push touching backend/shared/** matches both
+# workflows' filters, and both mutate ECS in the same account — Terraform registering task-def revisions
+# while ecs-deploy is rolling services. One group per branch makes them queue instead of interleaving.
+# PR runs get their own per-PR group: they never touch AWS, so there is no reason to queue them behind a
+# deploy, and a superseded PR run is safe to cancel where a half-finished deploy is not.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('deploy-pr-{0}', github.event.number) || format('aws-{0}', github.ref_name) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   detect-changes:
-    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    # The actor check is a loop guard. manifest-write commits deploy/<service>/image.json back to the
+    # branch it ran on, and on qa/main that path IS the promotion trigger — so a manifest write could
+    # start another promote, which writes the manifest again, forever. The only thing preventing that
+    # today is GitHub's rule that GITHUB_TOKEN pushes don't trigger workflows; this makes the guard
+    # explicit so swapping manifest-write to a PAT or App token can't silently reintroduce the loop.
+    # NOT `paths-ignore: [deploy/**]` — promotion into qa/main is *driven by* those files arriving,
+    # so ignoring that path would stop promotion working at all.
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'push' && github.actor != 'github-actions[bot]')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
-      thor-api-source: ${{ steps.filter.outputs['thor-api-source'] }}
-      thor-api-manifest: ${{ steps.filter.outputs['thor-api-manifest'] }}
-      task-api-source: ${{ steps.filter.outputs['task-api-source'] }}
-      task-api-manifest: ${{ steps.filter.outputs['task-api-manifest'] }}
-      intelligence-engine-source: ${{ steps.filter.outputs['intelligence-engine-source'] }}
-      intelligence-engine-manifest: ${{ steps.filter.outputs['intelligence-engine-manifest'] }}
+      # One JSON array, not two outputs per service. A job's `outputs:` map has to be written out
+      # statically, so per-service entries here were the fan-out deploy/services.json exists to
+      # remove. dorny publishes `changes` as the list of filter names that matched.
+      changes: ${{ steps.filter.outputs.changes }}
     steps:
       # dorny/paths-filter needs full history to diff, or it fails open (matches everything).
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      # The filter set is generated from deploy/services.json, so adding a service is one entry there
+      # rather than an edit here. Each service gets <name>-source (what a build of it consumes) and
+      # <name>-manifest (deploy/<name>/*.json — what a promotion into qa/main actually delivers).
+      # Per-service reasoning about which paths belong lives in that file's `notes`.
+      - id: filters
+        run: |
+          {
+            echo 'yaml<<FILTERS_EOF'
+            jq -r '
+              to_entries[] |
+              "\(.key)-source:",
+              (.value.source_paths[] | "  - " + @json),
+              "\(.key)-manifest:",
+              ("  - " + ("deploy/" + .key + "/*.json" | @json))
+            ' deploy/services.json
+            echo 'FILTERS_EOF'
+          } >> "$GITHUB_OUTPUT"
 
       # base defaults to main on push, which would diff dev/qa against main instead of their own last commit — force
       # it to the branch itself; left blank on pull_request, where the default (PR's base branch) is already correct.
@@ -58,41 +107,31 @@ jobs:
         id: filter
         with:
           base: ${{ github.event_name == 'push' && github.ref_name || '' }}
-          filters: |
-            # proto/ generates each side of the Thor.Api <-> intelligence-engine gRPC contract
-            # at build time (Grpc.Tools here, scripts/generate_grpc.py there), so a contract-only
-            # change has to rebuild both or the two sides silently drift apart.
-            thor-api-source:
-              - 'backend/services/Thor.API/**'
-              - 'backend/shared/**'
-              - 'proto/**'
-            thor-api-manifest:
-              - 'deploy/thor-api/*.json'
-            task-api-source:
-              - 'backend/services/Thor.TaskAPI/**'
-              - 'backend/shared/**'
-            task-api-manifest:
-              - 'deploy/task-api/*.json'
-            # No backend/shared/** — that's .NET-only code this Python service never builds against.
-            intelligence-engine-source:
-              - 'backend/services/Thor.IntelligenceEngine/**'
-              - 'proto/**'
-            intelligence-engine-manifest:
-              - 'deploy/intelligence-engine/*.json'
+          filters: ${{ steps.filters.outputs.yaml }}
 
   context:
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     needs: detect-changes
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       environment: ${{ steps.set.outputs.environment }}
       mode: ${{ steps.set.outputs.mode }}
-      thor-api: ${{ steps.set.outputs['thor-api'] }}
-      task-api: ${{ steps.set.outputs['task-api'] }}
-      intelligence-engine: ${{ steps.set.outputs['intelligence-engine'] }}
-      changed_services: ${{ steps.set.outputs.changed_services }}
+      # JSON array of the services this run should act on, e.g. ["thor-api","workflow-ingestion"].
+      services: ${{ steps.set.outputs.services }}
+      # The same selection split by kind, because the two halves feed different reusable workflows
+      # and `uses:` cannot be an expression. Both are matrix inputs, so both must be '[]' when empty
+      # — a matrix over an empty array is a workflow error, which is what the callers guard on.
+      core_services: ${{ steps.set.outputs.core_services }}
+      workflow_entries: ${{ steps.set.outputs.workflow_entries }}
     steps:
+      # Needed to read deploy/services.json.
+      - uses: actions/checkout@v4
+
       - id: set
+        env:
+          # || '[]' guards the case where detect-changes produced no output at all; jq needs valid JSON.
+          CHANGES: ${{ needs['detect-changes'].outputs.changes || '[]' }}
         run: |
           if [ "${{ github.event_name }}" = "push" ]; then
             BRANCH="${{ github.ref_name }}"
@@ -110,192 +149,209 @@ jobs:
             MODE="preview"
           fi
 
-          echo "environment=$ENVIRONMENT" >> "$GITHUB_OUTPUT"
-          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
-
-          # Preview and dev both read the source filter; qa/main read the manifest filter.
+          # Preview and dev both read the source filter; qa/main read the manifest filter. Selecting
+          # by suffix keeps this independent of how many services exist.
           if [ "${{ github.event_name }}" = "pull_request" ] || [ "$BRANCH" = "dev" ]; then
-            THOR_API="${{ needs['detect-changes'].outputs['thor-api-source'] }}"
-            TASK_API="${{ needs['detect-changes'].outputs['task-api-source'] }}"
-            INTELLIGENCE_ENGINE="${{ needs['detect-changes'].outputs['intelligence-engine-source'] }}"
+            SUFFIX="-source"
           else
-            THOR_API="${{ needs['detect-changes'].outputs['thor-api-manifest'] }}"
-            TASK_API="${{ needs['detect-changes'].outputs['task-api-manifest'] }}"
-            INTELLIGENCE_ENGINE="${{ needs['detect-changes'].outputs['intelligence-engine-manifest'] }}"
+            SUFFIX="-manifest"
           fi
 
-          echo "thor-api=$THOR_API" >> "$GITHUB_OUTPUT"
-          echo "task-api=$TASK_API" >> "$GITHUB_OUTPUT"
-          echo "intelligence-engine=$INTELLIGENCE_ENGINE" >> "$GITHUB_OUTPUT"
+          SERVICES=$(printf '%s' "$CHANGES" | jq -c --arg s "$SUFFIX" '[.[] | select(endswith($s)) | rtrimstr($s)]')
 
-          # Services getting their own deploy-<service> job this run — tells ecs-deploy which siblings to skip syncing.
-          CHANGED=""
-          [ "$THOR_API" = "true" ] && CHANGED="${CHANGED}thor-api,"
-          [ "$TASK_API" = "true" ] && CHANGED="${CHANGED}task-api,"
-          [ "$INTELLIGENCE_ENGINE" = "true" ] && CHANGED="${CHANGED}intelligence-engine,"
-          echo "changed_services=$CHANGED" >> "$GITHUB_OUTPUT"
+          # Core services carry only their name; workflow modules also need the bare workflow name
+          # and the PascalCase project the Dockerfile takes as its WORKFLOW build arg.
+          CORE=$(jq -c --argjson sel "$SERVICES" \
+            '[to_entries[] | select(.value.kind == "core" and (.key | IN($sel[]))) | .key]' deploy/services.json)
+          WORKFLOWS=$(jq -c --argjson sel "$SERVICES" \
+            '[to_entries[] | select(.value.kind == "workflow" and (.key | IN($sel[]))) | {name: .key, workflow: .value.workflow, project: .value.project}]' deploy/services.json)
 
-  # Expand-phase tenant schema migrations land before any service ships code that uses them. A
-  # failed plan, rejected approval or failed apply fails this job, and every deploy below needs it,
-  # so they're skipped. When the desired schema is already applied it finishes in the generate job.
-  tenant-migrations:
+          {
+            echo "environment=$ENVIRONMENT"
+            echo "mode=$MODE"
+            echo "services=$SERVICES"
+            echo "core_services=$CORE"
+            echo "workflow_entries=$WORKFLOWS"
+          } >> "$GITHUB_OUTPUT"
+
+  # Stops a deploy landing on infrastructure a failed apply may have left half-configured.
+  #
+  # `needs:` cannot span workflows, so this asks the API what infra.yml did with this exact commit.
+  # Three outcomes, and the third is the interesting one:
+  #
+  #   no run for this SHA   pass. infra.yml is path-filtered, so a change touching no infrastructure
+  #                         produces no run at all. This is the common case and must not fail.
+  #   completed             pass on success, fail on anything else.
+  #   still running         pass, with a warning. It cannot wait: this workflow and infra.yml share
+  #                         the aws-<branch> concurrency group (cancel-in-progress: false), so if
+  #                         this run won the lock, infra.yml is queued *behind* it and waiting here
+  #                         would deadlock the thing being waited on.
+  #
+  # So this catches the infra-ran-first ordering and not the other. Which workflow wins the lock on a
+  # given push is arbitrary, so treat it as a backstop rather than a guarantee. Closing the gap needs
+  # a trigger-model change — infra.yml completing is what should start deploy.yml, via workflow_run —
+  # and that is a bigger change than this, with its own footgun: workflow_run always resolves the
+  # workflow file from the default branch, and main carries almost none of this.
+  infra-gate:
+    if: github.event_name == 'push'
     needs: context
-    if: needs.context.outputs.mode != 'preview'
-    uses: ./.github/workflows/tenant-migrations.yml
-    with:
-      environment: ${{ needs.context.outputs.environment }}
-      tenant: all
-      phase: expand
-    secrets: inherit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'infra.yml',
+              head_sha: context.sha,
+              per_page: 100,
+            });
 
-  deploy-thor-api:
-    needs: [context, tenant-migrations]
-    if: needs.context.outputs.mode != 'preview' && needs.context.outputs['thor-api'] == 'true'
-    uses: ./.github/workflows/_deploy-core.yml
-    with:
-      service: thor-api
-      environment: ${{ needs.context.outputs.environment }}
-      mode: ${{ needs.context.outputs.mode }}
-      changed_services: ${{ needs.context.outputs.changed_services }}
-    secrets: inherit
+            if (runs.length === 0) {
+              core.info('No infra.yml run for this commit — it is path-filtered, so this is expected when nothing under infra/ changed.');
+              return;
+            }
 
-  deploy-task-api:
-    needs: [context, tenant-migrations]
-    if: needs.context.outputs.mode != 'preview' && needs.context.outputs['task-api'] == 'true'
-    uses: ./.github/workflows/_deploy-core.yml
-    with:
-      service: task-api
-      environment: ${{ needs.context.outputs.environment }}
-      mode: ${{ needs.context.outputs.mode }}
-      changed_services: ${{ needs.context.outputs.changed_services }}
-    secrets: inherit
+            const latest = runs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+            core.info(`infra.yml run ${latest.id}: status=${latest.status}, conclusion=${latest.conclusion}`);
 
-  deploy-intelligence-engine:
-    needs: [context, tenant-migrations]
-    if: needs.context.outputs.mode != 'preview' && needs.context.outputs['intelligence-engine'] == 'true'
-    uses: ./.github/workflows/_deploy-core.yml
-    with:
-      service: intelligence-engine
-      environment: ${{ needs.context.outputs.environment }}
-      mode: ${{ needs.context.outputs.mode }}
-      changed_services: ${{ needs.context.outputs.changed_services }}
-    secrets: inherit
+            if (latest.status !== 'completed') {
+              core.warning(
+                `infra.yml is still ${latest.status} for this commit. Not waiting — it shares this ` +
+                `workflow's concurrency group, so waiting could deadlock it. Proceeding with the deploy.`);
+              return;
+            }
 
-  # Migrate-phase backfills run once the services are live: they write both the old and the new
-  # columns by then, so no row written meanwhile is missed. This run also records the deployed model,
-  # which the contract phase's rollback window counts from. always(): a service that didn't change is
-  # skipped, not failed (same as write-manifests). A failed or cancelled deploy skips it — the new
-  # model isn't fully live. Pushes only: a manual deploy or rollback is never the deployed model.
-  tenant-backfills:
-    needs: [context, tenant-migrations, deploy-thor-api, deploy-task-api, deploy-intelligence-engine]
+            if (latest.conclusion !== 'success') {
+              core.setFailed(
+                `infra.yml concluded '${latest.conclusion}' for this commit. Refusing to deploy onto ` +
+                `infrastructure that may be half-applied. Re-run infra.yml, then re-run this workflow.`);
+            }
+
+  # Tests are not run here. test.yml fires on the pull request, and a merge commit is the same tree
+  # the PR already tested — a push-side call re-ran the entire suite for no new signal.
+  #
+  # What that makes load-bearing: `test / dotnet` and `test / python` must be required status checks
+  # on dev, qa and main. Nothing in this workflow re-checks, so without them a red PR merges and
+  # deploys. Direct pushes that bypass a PR are uncovered for the same reason.
+  #
+  # The deploy jobs therefore gate on `context` alone, and rely on the default needs: behaviour —
+  # a failed `context` skips them — rather than the `!cancelled()` override the test gate required.
+  deploy-core:
+    needs: [context, infra-gate]
     if: >-
-      always() && github.event_name == 'push' && needs.context.outputs.mode != 'preview'
-      && needs.tenant-migrations.result == 'success'
-      && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
-    uses: ./.github/workflows/tenant-migrations.yml
+      needs.context.outputs.mode != 'preview' &&
+      needs.context.outputs.core_services != '[]'
+    strategy:
+      # One service failing must not cancel the others: each records its own manifest independently,
+      # and a half-cancelled fan-out would leave some services deployed but unrecorded.
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.context.outputs.core_services) }}
+    uses: ./.github/workflows/_deploy-core.yml
     with:
+      service: ${{ matrix.service }}
       environment: ${{ needs.context.outputs.environment }}
-      tenant: all
-      phase: migrate
+      mode: ${{ needs.context.outputs.mode }}
     secrets: inherit
 
-  preview-thor-api:
+  # A separate job from deploy-core only because `uses:` cannot be an expression — workflow modules
+  # have no ECS service to roll and no Terraform apply, so they go through their own reusable
+  # workflow. Everything else about the two is the same shape.
+  deploy-workflows:
+    needs: [context, infra-gate]
+    if: >-
+      needs.context.outputs.mode != 'preview' &&
+      needs.context.outputs.workflow_entries != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        entry: ${{ fromJSON(needs.context.outputs.workflow_entries) }}
+    uses: ./.github/workflows/_deploy-workflow.yml
+    with:
+      workflow: ${{ matrix.entry.workflow }}
+      project: ${{ matrix.entry.project }}
+      environment: ${{ needs.context.outputs.environment }}
+      mode: ${{ needs.context.outputs.mode }}
+    secrets: inherit
+
+  # Compile-only check on PRs. Core services only: a workflow module's image is not built here.
+  preview:
     needs: context
-    if: needs.context.outputs.mode == 'preview' && needs.context.outputs['thor-api'] == 'true'
+    if: >-
+      needs.context.outputs.mode == 'preview' &&
+      needs.context.outputs.core_services != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.context.outputs.core_services) }}
     uses: ./.github/workflows/deploy-preview.yml
     with:
-      service: thor-api
+      service: ${{ matrix.service }}
     secrets: inherit
 
-  preview-task-api:
-    needs: context
-    if: needs.context.outputs.mode == 'preview' && needs.context.outputs['task-api'] == 'true'
-    uses: ./.github/workflows/deploy-preview.yml
-    with:
-      service: task-api
-    secrets: inherit
-
-  preview-intelligence-engine:
-    needs: context
-    if: needs.context.outputs.mode == 'preview' && needs.context.outputs['intelligence-engine'] == 'true'
-    uses: ./.github/workflows/deploy-preview.yml
-    with:
-      service: intelligence-engine
-    secrets: inherit
-
-  # Same gate for manual deploys/rollbacks. A rollback is safe on an expanded schema, and this is a
-  # no-op unless the dispatched ref carries a model change that hasn't been applied yet.
-  tenant-migrations-manual:
+  # Resolves the dispatched service against deploy/services.json so the two manual jobs below need
+  # no per-service mapping. That mapping used to be spelled out as expression chains — GitHub
+  # expressions have no string replace — and adding a workflow meant extending each of them.
+  manual-context:
     if: github.event_name == 'workflow_dispatch'
-    uses: ./.github/workflows/tenant-migrations.yml
-    with:
-      environment: ${{ inputs.environment }}
-      tenant: all
-    secrets: inherit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      # Each holds zero or one entry: whichever kind the dispatched service is, the other is '[]'
+      # and its job is skipped. Membership decides the route, so the "workflow-" name prefix is no
+      # longer load-bearing.
+      core: ${{ steps.set.outputs.core }}
+      workflows: ${{ steps.set.outputs.workflows }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: set
+        env:
+          SERVICE: ${{ inputs.service }}
+        run: |
+          CORE=$(jq -c --arg s "$SERVICE"             '[to_entries[] | select(.key == $s and .value.kind == "core") | .key]' deploy/services.json)
+          WORKFLOWS=$(jq -c --arg s "$SERVICE"             '[to_entries[] | select(.key == $s and .value.kind == "workflow") | {name: .key, workflow: .value.workflow, project: .value.project}]' deploy/services.json)
+
+          if [ "$CORE" = "[]" ] && [ "$WORKFLOWS" = "[]" ]; then
+            echo "::error::'$SERVICE' has no entry in deploy/services.json." >&2
+            exit 1
+          fi
+
+          {
+            echo "core=$CORE"
+            echo "workflows=$WORKFLOWS"
+          } >> "$GITHUB_OUTPUT"
 
   deploy-manual:
-    needs: tenant-migrations-manual
-    if: github.event_name == 'workflow_dispatch'
+    needs: manual-context
+    if: needs['manual-context'].outputs.core != '[]'
+    strategy:
+      matrix:
+        service: ${{ fromJSON(needs['manual-context'].outputs.core) }}
     uses: ./.github/workflows/_deploy-core.yml
     with:
-      service: ${{ inputs.service }}
+      service: ${{ matrix.service }}
       environment: ${{ inputs.environment }}
       mode: ${{ inputs.environment == 'dev' && 'deploy' || 'promote' }}
       image_digest: ${{ inputs.image_digest }}
     secrets: inherit
 
-  # Manifest writes happen once per push here, not once per service in _deploy-core.yml, so concurrent services
-  # never race each other's writes. always(): a skipped deploy-<service> job isn't "success", so without this the
-  # default needs: gate would skip this job too whenever fewer than all three services changed.
-  write-manifests:
-    needs: [context, deploy-thor-api, deploy-task-api, deploy-intelligence-engine]
-    if: always() && needs.context.result == 'success' && needs.context.outputs.mode != 'preview'
-    runs-on: ubuntu-latest
-    steps:
-      # uses: ./local/path still needs the repo checked out to resolve the action, even though manifest-write itself doesn't touch git.
-      - uses: actions/checkout@v4
-
-      - name: Write thor-api's manifest
-        if: needs['deploy-thor-api'].outputs.digest != ''
-        uses: ./.github/actions/manifest-write
-        with:
-          service: thor-api
-          environment: ${{ needs.context.outputs.environment }}
-          digest: ${{ needs['deploy-thor-api'].outputs.digest }}
-          commit_id: ${{ needs['deploy-thor-api'].outputs.commit_id }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Write task-api's manifest
-        if: needs['deploy-task-api'].outputs.digest != ''
-        uses: ./.github/actions/manifest-write
-        with:
-          service: task-api
-          environment: ${{ needs.context.outputs.environment }}
-          digest: ${{ needs['deploy-task-api'].outputs.digest }}
-          commit_id: ${{ needs['deploy-task-api'].outputs.commit_id }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Write intelligence-engine's manifest
-        if: needs['deploy-intelligence-engine'].outputs.digest != ''
-        uses: ./.github/actions/manifest-write
-        with:
-          service: intelligence-engine
-          environment: ${{ needs.context.outputs.environment }}
-          digest: ${{ needs['deploy-intelligence-engine'].outputs.digest }}
-          commit_id: ${{ needs['deploy-intelligence-engine'].outputs.commit_id }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-
-  write-manifest-manual:
-    needs: deploy-manual
-    if: github.event_name == 'workflow_dispatch' && needs['deploy-manual'].result == 'success'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: ./.github/actions/manifest-write
-        with:
-          service: ${{ inputs.service }}
-          environment: ${{ inputs.environment }}
-          digest: ${{ needs['deploy-manual'].outputs.digest }}
-          commit_id: ${{ needs['deploy-manual'].outputs.commit_id }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+  # A separate job only because `uses:` cannot be an expression; workflow modules deploy an image but
+  # no ECS service, so they go through _deploy-workflow.yml.
+  deploy-manual-workflow:
+    needs: manual-context
+    if: needs['manual-context'].outputs.workflows != '[]'
+    strategy:
+      matrix:
+        entry: ${{ fromJSON(needs['manual-context'].outputs.workflows) }}
+    uses: ./.github/workflows/_deploy-workflow.yml
+    with:
+      workflow: ${{ matrix.entry.workflow }}
+      project: ${{ matrix.entry.project }}
+      environment: ${{ inputs.environment }}
+      mode: ${{ inputs.environment == 'dev' && 'deploy' || 'promote' }}
+      image_digest: ${{ inputs.image_digest }}
+    secrets: inherit

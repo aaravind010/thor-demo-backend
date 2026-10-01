@@ -1,0 +1,686 @@
+{
+  "Comment": "Thor ingestion workflow. Terraform substitutes the placeholders with templatefile; validate edits with: aws stepfunctions validate-state-machine-definition.",
+  "StartAt": "Envelope",
+  "States": {
+    "Envelope": {
+      "Type": "Pass",
+      "Parameters": {
+        "Request.$": "$"
+      },
+      "ResultPath": "$",
+      "Next": "SelectCompute"
+    },
+    "SelectCompute": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${lambda_arn_select_compute}",
+        "Payload.$": "$.Request"
+      },
+      "ResultSelector": {
+        "Target.$": "$.Payload.Target",
+        "TotalBytes.$": "$.Payload.TotalBytes",
+        "ItemCount.$": "$.Payload.ItemCount"
+      },
+      "ResultPath": "$.Compute",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "SendToDeadLetterQueue"
+        }
+      ],
+      "Next": "ListFiles"
+    },
+    "ListFiles": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${lambda_arn_extract_stage}",
+        "Payload.$": "$.Request"
+      },
+      "ResultSelector": {
+        "FileCount.$": "$.Payload.FileCount",
+        "Files.$": "$.Payload.Files"
+      },
+      "ResultPath": "$.Fanout",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "SendToDeadLetterQueue"
+        }
+      ],
+      "Next": "ExtractStageChoose"
+    },
+    "ExtractStageChoose": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.Compute.Target",
+          "StringEquals": "lambda",
+          "Next": "ExtractStageLambda"
+        },
+        {
+          "Variable": "$.Compute.Target",
+          "StringEquals": "ecs-task",
+          "Next": "ExtractStageEcs"
+        }
+      ],
+      "Default": "UnknownComputeTarget"
+    },
+    "ExtractStageLambda": {
+      "Type": "Map",
+      "Label": "ExtractStageLambda",
+      "ItemsPath": "$.Fanout.Files",
+      "MaxConcurrency": 10,
+      "ResultPath": null,
+      "ResultWriter": {
+        "Resource": "arn:aws:states:::s3:putObject",
+        "Parameters": {
+          "Bucket": "${map_results_bucket}",
+          "Prefix.$": "States.Format(\u0027ingestion/ExtractStage/{}\u0027, $$.Execution.Name)"
+        }
+      },
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "DISTRIBUTED",
+          "ExecutionType": "STANDARD"
+        },
+        "StartAt": "ExtractStageLambdaItemTask",
+        "States": {
+          "ExtractStageLambdaItemTask": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${lambda_arn_extract_stage}",
+              "Payload.$": "$"
+            },
+            "ResultPath": null,
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "IntervalSeconds": 30,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "ResultPath": "$.Error",
+                "Next": "ExtractStageLambdaItemFailed"
+              }
+            ],
+            "End": true
+          },
+          "ExtractStageLambdaItemFailed": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage",
+            "Parameters": {
+              "QueueUrl": "${dlq_url}",
+              "MessageBody": {
+                "Item.$": "$",
+                "FailedState": "ExtractStage",
+                "FailedStep": "extract-stage",
+                "ComputeTarget": "lambda"
+              }
+            },
+            "ResultPath": null,
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "IntervalSeconds": 30,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "Next": "ExtractStageLambdaItemTolerated"
+          },
+          "ExtractStageLambdaItemTolerated": {
+            "Type": "Pass",
+            "Parameters": {
+              "Success": false,
+              "Error.$": "$.Error"
+            },
+            "End": true
+          }
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "SendToDeadLetterQueue"
+        }
+      ],
+      "Next": "ExtractStageDone"
+    },
+    "ExtractStageEcs": {
+      "Type": "Map",
+      "Label": "ExtractStageEcs",
+      "ItemsPath": "$.Fanout.Files",
+      "MaxConcurrency": 10,
+      "ResultPath": null,
+      "ResultWriter": {
+        "Resource": "arn:aws:states:::s3:putObject",
+        "Parameters": {
+          "Bucket": "${map_results_bucket}",
+          "Prefix.$": "States.Format(\u0027ingestion/ExtractStage/{}\u0027, $$.Execution.Name)"
+        }
+      },
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "DISTRIBUTED",
+          "ExecutionType": "STANDARD"
+        },
+        "StartAt": "ExtractStageEcsItemTask",
+        "States": {
+          "ExtractStageEcsItemTask": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::ecs:runTask.sync",
+            "Parameters": {
+              "Cluster": "${cluster_name}",
+              "TaskDefinition": "${task_definition_arn_extract_stage}",
+              "LaunchType": "FARGATE",
+              "NetworkConfiguration": {
+                "AwsvpcConfiguration": {
+                  "Subnets": ["${subnet_ids}"],
+                  "SecurityGroups": [
+                    "${security_group_id}"
+                  ],
+                  "AssignPublicIp": "DISABLED"
+                }
+              },
+              "Overrides": {
+                "ContainerOverrides": [
+                  {
+                    "Name": "${container_name}",
+                    "Environment": [
+                      {
+                        "Name": "THOR_INPUT",
+                        "Value.$": "States.JsonToString($)"
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            "ResultPath": null,
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "IntervalSeconds": 30,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "ResultPath": "$.Error",
+                "Next": "ExtractStageEcsItemFailed"
+              }
+            ],
+            "End": true
+          },
+          "ExtractStageEcsItemFailed": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage",
+            "Parameters": {
+              "QueueUrl": "${dlq_url}",
+              "MessageBody": {
+                "Item.$": "$",
+                "FailedState": "ExtractStage",
+                "FailedStep": "extract-stage",
+                "ComputeTarget": "ecs"
+              }
+            },
+            "ResultPath": null,
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "IntervalSeconds": 30,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "Next": "ExtractStageEcsItemTolerated"
+          },
+          "ExtractStageEcsItemTolerated": {
+            "Type": "Pass",
+            "Parameters": {
+              "Success": false,
+              "Error.$": "$.Error"
+            },
+            "End": true
+          }
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "SendToDeadLetterQueue"
+        }
+      ],
+      "Next": "ExtractStageDone"
+    },
+    "ExtractStageDone": {
+      "Type": "Pass",
+      "Parameters": {
+        "Request.$": "$.Request",
+        "Compute.$": "$.Compute"
+      },
+      "ResultPath": "$",
+      "Next": "PromoteChoose"
+    },
+    "PromoteChoose": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.Compute.Target",
+          "StringEquals": "lambda",
+          "Next": "PromoteLambda"
+        },
+        {
+          "Variable": "$.Compute.Target",
+          "StringEquals": "ecs-task",
+          "Next": "PromoteEcs"
+        }
+      ],
+      "Default": "UnknownComputeTarget"
+    },
+    "PromoteLambda": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${lambda_arn_promote}",
+        "Payload.$": "$.Request"
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "SendToDeadLetterQueue"
+        }
+      ],
+      "Next": "GraphLoadStartChoose"
+    },
+    "PromoteEcs": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::ecs:runTask.sync",
+      "Parameters": {
+        "Cluster": "${cluster_name}",
+        "TaskDefinition": "${task_definition_arn_promote}",
+        "LaunchType": "FARGATE",
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "Subnets": ["${subnet_ids}"],
+            "SecurityGroups": [
+              "${security_group_id}"
+            ],
+            "AssignPublicIp": "DISABLED"
+          }
+        },
+        "Overrides": {
+          "ContainerOverrides": [
+            {
+              "Name": "${container_name}",
+              "Environment": [
+                {
+                  "Name": "THOR_INPUT",
+                  "Value.$": "States.JsonToString($.Request)"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "SendToDeadLetterQueue"
+        }
+      ],
+      "Next": "GraphLoadStartChoose"
+    },
+    "GraphLoadStartChoose": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.Compute.Target",
+          "StringEquals": "lambda",
+          "Next": "GraphLoadStartLambda"
+        },
+        {
+          "Variable": "$.Compute.Target",
+          "StringEquals": "ecs-task",
+          "Next": "GraphLoadStartEcs"
+        }
+      ],
+      "Default": "UnknownComputeTarget"
+    },
+    "GraphLoadStartLambda": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${lambda_arn_graph_load_start}",
+        "Payload.$": "$.Request"
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "SendToDeadLetterQueue"
+        }
+      ],
+      "Next": "GraphLoadPoll"
+    },
+    "GraphLoadStartEcs": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::ecs:runTask.sync",
+      "Parameters": {
+        "Cluster": "${cluster_name}",
+        "TaskDefinition": "${task_definition_arn_graph_load_start}",
+        "LaunchType": "FARGATE",
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "Subnets": ["${subnet_ids}"],
+            "SecurityGroups": [
+              "${security_group_id}"
+            ],
+            "AssignPublicIp": "DISABLED"
+          }
+        },
+        "Overrides": {
+          "ContainerOverrides": [
+            {
+              "Name": "${container_name}",
+              "Environment": [
+                {
+                  "Name": "THOR_INPUT",
+                  "Value.$": "States.JsonToString($.Request)"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "SendToDeadLetterQueue"
+        }
+      ],
+      "Next": "GraphLoadPoll"
+    },
+    "GraphLoadPoll": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${lambda_arn_graph_load_poll}",
+        "Payload.$": "$.Request"
+      },
+      "ResultSelector": {
+        "Outcome.$": "$.Payload.Outcome",
+        "LoadId.$": "$.Payload.LoadId",
+        "WorkflowId.$": "$.Payload.WorkflowId",
+        "IsInProgress.$": "$.Payload.IsInProgress"
+      },
+      "ResultPath": "$.Poll",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "SendToDeadLetterQueue"
+        }
+      ],
+      "Next": "GraphLoadPollCheck"
+    },
+    "GraphLoadPollCheck": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.Poll.IsInProgress",
+          "BooleanEquals": true,
+          "Next": "GraphLoadPollWait"
+        }
+      ],
+      "Default": "StartAtre"
+    },
+    "StartAtre": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::states:startExecution",
+      "Comment": "Fire and forget: the optimized (non-.sync) integration returns as soon as the child execution starts, so this reports whether ATRE was *started*, never whether it succeeded. ATRE owns its own failure handling, recorded on its own workflow row; it has no DLQ. No execution Name is pinned, so an ingestion retry starts a second ATRE execution - which is safe because ATRE derives a deterministic RunId from (TenantId, ScanManifestId) and every write it makes is an ON CONFLICT DO NOTHING upsert keyed on it. Input is projected field by field rather than passed as $.Request: forwarding ingestion's RunId would make ATRE adopt it as its own, and WorkflowLifecycle looks a workflow row up by RunId alone when it has one - so ATRE would find and overwrite ingestion's row.",
+      "Parameters": {
+        "StateMachineArn": "${state_machine_arn_atre}",
+        "Input": {
+          "TenantId.$": "$.Request.TenantId",
+          "ScanManifestId.$": "$.Request.ScanManifestId"
+        }
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "SendToDeadLetterQueue"
+        }
+      ],
+      "Next": "StartOwnership"
+    },
+    "StartOwnership": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::states:startExecution",
+      "Comment": "Fire and forget, like StartAtre and for the same reasons: this reports whether Ownership was started, never whether it succeeded, and Ownership records its own outcome on its own workflow row. After StartAtre rather than after ATRE finishes because Ownership reads no ATRE output; it needs only this run's graph load to have finished, which it has by here. No execution Name is pinned, so an ingestion retry starts a second Ownership execution - safe because Ownership derives a deterministic RunId from (TenantId, ScanManifestId) and every write it makes is an ON CONFLICT DO NOTHING keyed on it. Input is projected field by field for StartAtre's reason: a forwarded RunId would make Ownership adopt ingestion's workflow row as its own.",
+      "Parameters": {
+        "StateMachineArn": "${state_machine_arn_ownership}",
+        "Input": {
+          "TenantId.$": "$.Request.TenantId",
+          "ScanManifestId.$": "$.Request.ScanManifestId"
+        }
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "SendToDeadLetterQueue"
+        }
+      ],
+      "Next": "WorkflowSucceeded"
+    },
+    "GraphLoadPollWait": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "GraphLoadPoll"
+    },
+    "SendToDeadLetterQueue": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sqs:sendMessage",
+      "Parameters": {
+        "QueueUrl": "${dlq_url}",
+        "MessageBody": {
+          "Request.$": "$.Request",
+          "Error.$": "$.Error"
+        }
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "WorkflowFailed"
+    },
+    "WorkflowSucceeded": {
+      "Type": "Succeed"
+    },
+    "WorkflowFailed": {
+      "Type": "Fail",
+      "Error": "WorkflowFailed",
+      "Cause": "See the DLQ message SendToDeadLetterQueue just sent for which step failed and why."
+    },
+    "UnknownComputeTarget": {
+      "Type": "Fail",
+      "Error": "UnknownComputeTarget",
+      "Cause": "The compute-selection step returned a Target other than \u0027lambda\u0027 or \u0027ecs-task\u0027 - see ComputeTarget.cs."
+    }
+  }
+}

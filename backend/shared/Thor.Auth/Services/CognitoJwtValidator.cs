@@ -60,7 +60,10 @@ public sealed class CognitoJwtValidator : ICognitoValidator
             var scopeClaim = claims.FindFirst("scope")?.Value ?? string.Empty;
             var scopes = scopeClaim.Split(' ', StringSplitOptions.RemoveEmptyEntries);
 
-            return JwtValidationResult.Success(sub, scopes);
+            // cognito:groups is a JSON array; the handler surfaces each element as its own claim.
+            var groups = claims.FindAll("cognito:groups").Select(c => c.Value).ToArray();
+
+            return JwtValidationResult.Success(sub, scopes, groups);
         }
         catch (Exception ex)
         {

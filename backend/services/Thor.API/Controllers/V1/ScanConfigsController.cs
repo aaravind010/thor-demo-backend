@@ -1,3 +1,4 @@
+using Asp.Versioning;
 using Microsoft.AspNetCore.Mvc;
 using Thor.Api.Constants;
 using Thor.Api.Exceptions;
@@ -8,7 +9,8 @@ using Thor.DataConnectionManager.Exceptions;
 namespace Thor.Api.Controllers.V1;
 
 [ApiController]
-[Route("/scan-config")]
+[ApiVersion("1.0")]
+[Route("v{version:apiVersion}/scan-config")]
 public class ScanConfigsController(ScanConfigService scanConfigService) : ControllerBase
 {
     // The Lambda authorizer validates the caller and sets X-THOR-TENANT-ID / X-THOR-ACTOR-ID;

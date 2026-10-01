@@ -1,3 +1,4 @@
+using Asp.Versioning;
 using Microsoft.AspNetCore.Mvc;
 using Thor.Api.Constants;
 using Thor.Api.Exceptions;
@@ -9,7 +10,8 @@ using Thor.DataLayer.Models.Tenants;
 namespace Thor.Api.Controllers.V1;
 
 [ApiController]
-[Route("/scan")]
+[ApiVersion("1.0")]
+[Route("v{version:apiVersion}/scan")]
 public class ScanController(ScanService scanService) : ControllerBase
 {
     // The Lambda authorizer validates the caller and sets X-THOR-TENANT-ID; requests reaching

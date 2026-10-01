@@ -1,0 +1,338 @@
+name: Deploy workflow module (reusable)
+
+# Deploys one workflow module's container image. Called by deploy.yml; mirrors _deploy-core.yml's
+# dev-build / qa-promote / prod-promote shape, but is much thinner because there is no ECS service to
+# roll and — crucially — no Terraform apply.
+#
+# Terraform points the compute at a constant floating tag and never learns which build is running
+# (see infra/src/modules/workflow's image_tag). This workflow moves that tag. The two compute targets
+# then diverge only in when they resolve it:
+#
+#   ECS     resolves at task launch. Moving the tag is the whole deploy — the next RunTask pulls the
+#           new image, with no new task definition revision and nothing to update.
+#   Lambda  resolves at update time, so each image-packaged step function needs update-function-code.
+#           It is passed the same floating tag, so the stored ImageUri still matches what Terraform
+#           configured and no drift appears on the next plan.
+#
+# The workflow being disabled is a normal state, not an error: the ECR repository and security group
+# exist before the compute does, so the very first deploy pushes an image and moves the tag with no
+# functions to update. Enabling the workflow then picks that build up.
+
+on:
+  workflow_call:
+    inputs:
+      workflow:
+        description: "Workflow name, e.g. ingestion. Matches the key in var.workflows and the ECR repository thor-<env>-<workflow>-ecr."
+        required: true
+        type: string
+      project:
+        description: "Value for the Dockerfile's WORKFLOW build arg — the Thor.Workflows.<project> assembly, e.g. Ingestion."
+        required: true
+        type: string
+      environment:
+        required: true
+        type: string
+      mode:
+        description: "deploy (build from source, dev only) or promote (reuse the digest dev recorded)."
+        required: true
+        type: string
+      image_digest:
+        description: "JFrog digest to promote (manual rollback). Blank = read it from the upstream environment's manifest."
+        required: false
+        type: string
+        default: ""
+    outputs:
+      # qa resolves through qa-record, not qa-promote: that job boundary is the approval, and keeping
+      # the output behind it means deploy.yml cannot record a qa digest that nobody signed off.
+      digest:
+        description: "JFrog digest deployed, for the manifest."
+        value: ${{ jobs.build.outputs.digest || jobs['qa-record'].outputs.digest || jobs['prod-promote'].outputs.digest }}
+      commit_id:
+        value: ${{ jobs.build.outputs.commit_id || jobs['qa-record'].outputs.commit_id || jobs['prod-promote'].outputs.commit_id }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build:
+    if: inputs.environment == 'dev' && inputs.mode == 'deploy'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      digest: ${{ steps.push.outputs.ref }}
+      commit_id: ${{ github.sha }}
+    env:
+      ECR_REPOSITORY: thor-${{ inputs.environment }}-${{ inputs.workflow }}-ecr
+      DEPLOY_TAG: deployed
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/ecr-login
+        id: ecr
+        with:
+          role_arn: ${{ vars.DEV_AWS_ROLE_ARN }}
+          region: ${{ vars.DEV_AWS_REGION }}
+
+      - uses: ./.github/actions/jfrog-login
+        id: jfrog
+        with:
+          jfrog_hostname: ${{ vars.JFROG_HOSTNAME }}
+          jfrog_username: ${{ vars.jf_usr_thor }}
+          jfrog_access_token: ${{ secrets.jf_api_thor }}
+
+      - name: Set image URIs
+        id: image
+        run: |
+          echo "jfrog_uri=${{ steps.jfrog.outputs.registry }}/${{ vars.JFROG_DOCKER_REPOSITORY }}/workflow-${{ inputs.workflow }}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "ecr_uri=${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      # One Dockerfile for every workflow; WORKFLOW selects which project it publishes. Context is the
+      # repo root because the build copies backend/ wholesale — the workflow projects reference
+      # backend/shared/* by ProjectReference.
+      - name: Build image
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg WORKFLOW='${{ inputs.project }}' \
+            -f backend/workflows/Dockerfile \
+            -t '${{ steps.image.outputs.jfrog_uri }}' \
+            .
+
+      # JFrog is the source of truth: the digest recorded here is what qa and prod later pull, so they
+      # never depend on another environment's ECR.
+      - name: Push to JFrog
+        id: push
+        run: |
+          set -euo pipefail
+          PUSH_OUTPUT=$(docker push '${{ steps.image.outputs.jfrog_uri }}')
+          echo "$PUSH_OUTPUT"
+          DIGEST=$(echo "$PUSH_OUTPUT" | grep -oP 'digest: \Ksha256:[a-f0-9]+')
+          echo "ref=${{ steps.jfrog.outputs.registry }}/${{ vars.JFROG_DOCKER_REPOSITORY }}/workflow-${{ inputs.workflow }}@${DIGEST}" >> "$GITHUB_OUTPUT"
+
+      - name: Push to ECR
+        run: |
+          set -euo pipefail
+          docker tag '${{ steps.image.outputs.jfrog_uri }}' '${{ steps.image.outputs.ecr_uri }}'
+          docker push '${{ steps.image.outputs.ecr_uri }}'
+
+      - uses: ./.github/actions/workflow-image-release
+        with:
+          workflow: ${{ inputs.workflow }}
+          environment: ${{ inputs.environment }}
+          ecr_repository: ${{ env.ECR_REPOSITORY }}
+          ecr_registry: ${{ steps.ecr.outputs.registry }}
+          source_tag: ${{ github.sha }}
+          deploy_tag: ${{ env.DEPLOY_TAG }}
+
+  # qa is ungated: the approval happens after, in qa-record, once this build has actually been
+  # deployed and can be exercised. prod is the other way round — prod-promote gates before it runs.
+  qa-promote:
+    if: inputs.environment == 'qa' && inputs.mode == 'promote'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      digest: ${{ steps.manifest.outputs.digest }}
+      commit_id: ${{ steps.manifest.outputs.tag }}
+    env:
+      ECR_REPOSITORY: thor-${{ inputs.environment }}-${{ inputs.workflow }}-ecr
+      DEPLOY_TAG: deployed
+      UPSTREAM: dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/ecr-login
+        id: ecr
+        with:
+          role_arn: ${{ vars.QA_AWS_ROLE_ARN }}
+          region: ${{ vars.QA_AWS_REGION }}
+
+      - uses: ./.github/actions/jfrog-login
+        id: jfrog
+        with:
+          jfrog_hostname: ${{ vars.JFROG_HOSTNAME }}
+          jfrog_username: ${{ vars.jf_usr_thor }}
+          jfrog_access_token: ${{ secrets.jf_api_thor }}
+
+      # Blank image_digest = read what the upstream environment's manifest recorded.
+      - name: Resolve digest to promote
+        id: manifest
+        run: |
+          set -euo pipefail
+          MANIFEST_FILE="deploy/workflow-${{ inputs.workflow }}/image.json"
+
+          if [ -n '${{ inputs.image_digest }}' ]; then
+            DIGEST='${{ inputs.image_digest }}'
+            TAG="manual-$(date +%Y%m%d%H%M%S)"
+            echo "Using explicitly provided digest: ${DIGEST}"
+          else
+            if [ ! -f "$MANIFEST_FILE" ]; then
+              echo "::error::${MANIFEST_FILE} does not exist — ${UPSTREAM} has never recorded a successful deploy of this workflow." >&2
+              exit 1
+            fi
+            DIGEST=$(jq -r ".${UPSTREAM}.digest" "$MANIFEST_FILE")
+            TAG=$(jq -r ".${UPSTREAM}.commitId" "$MANIFEST_FILE")
+            if [ -z "$DIGEST" ] || [ "$DIGEST" = "null" ]; then
+              echo "::error::${MANIFEST_FILE} has no ${UPSTREAM}.digest to promote." >&2
+              exit 1
+            fi
+            echo "Resolved ${UPSTREAM}'s manifest digest: ${DIGEST}"
+          fi
+
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      # Pull by digest from JFrog and push into this environment's own ECR. Environments never pull
+      # from each other's registries — JFrog is the only promotion path.
+      - name: Pull from JFrog and push to ECR
+        run: |
+          set -euo pipefail
+          SRC='${{ steps.manifest.outputs.digest }}'
+          DEST="${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}:${{ steps.manifest.outputs.tag }}"
+
+          docker pull "$SRC"
+          docker tag "$SRC" "$DEST"
+          docker push "$DEST"
+
+      - uses: ./.github/actions/workflow-image-release
+        with:
+          workflow: ${{ inputs.workflow }}
+          environment: ${{ inputs.environment }}
+          ecr_repository: ${{ env.ECR_REPOSITORY }}
+          ecr_registry: ${{ steps.ecr.outputs.registry }}
+          source_tag: ${{ steps.manifest.outputs.tag }}
+          deploy_tag: ${{ env.DEPLOY_TAG }}
+
+  # The approval boundary, and nothing else. qa-promote has already deployed the build; this records
+  # that a reviewer considers it prod-eligible. The job body is one echo — what is load-bearing is
+  # that this workflow's `digest` output stays blank until it completes, so deploy.yml's
+  # write-manifests cannot record a qa digest, and prod cannot promote one, without the approval.
+  qa-record:
+    needs: qa-promote
+    if: inputs.environment == 'qa' && inputs.mode == 'promote' && needs['qa-promote'].result == 'success'
+    runs-on: ubuntu-latest
+    environment: qa
+    timeout-minutes: 10
+    outputs:
+      digest: ${{ needs['qa-promote'].outputs.digest }}
+      commit_id: ${{ needs['qa-promote'].outputs.commit_id }}
+    steps:
+      - name: Record approval
+        run: |
+          echo "qa approved workflow-${{ inputs.workflow }} @ ${{ needs['qa-promote'].outputs.digest }}"
+          echo "Recording it in deploy/workflow-${{ inputs.workflow }}/image.json is deploy.yml's write-manifests job."
+
+  # prod gates before deploying, not after — the reverse of qa.
+  prod-promote:
+    if: inputs.environment == 'prod' && inputs.mode == 'promote'
+    runs-on: ubuntu-latest
+    environment: prod
+    timeout-minutes: 45
+    outputs:
+      digest: ${{ steps.manifest.outputs.digest }}
+      commit_id: ${{ steps.manifest.outputs.tag }}
+    env:
+      ECR_REPOSITORY: thor-${{ inputs.environment }}-${{ inputs.workflow }}-ecr
+      DEPLOY_TAG: deployed
+      UPSTREAM: qa
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/ecr-login
+        id: ecr
+        with:
+          role_arn: ${{ vars.PROD_AWS_ROLE_ARN }}
+          region: ${{ vars.PROD_AWS_REGION }}
+
+      - uses: ./.github/actions/jfrog-login
+        id: jfrog
+        with:
+          jfrog_hostname: ${{ vars.JFROG_HOSTNAME }}
+          jfrog_username: ${{ vars.jf_usr_thor }}
+          jfrog_access_token: ${{ secrets.jf_api_thor }}
+
+      # Blank image_digest = promote what qa recorded, which qa-record's approval gated.
+      - name: Resolve digest to promote
+        id: manifest
+        run: |
+          set -euo pipefail
+          MANIFEST_FILE="deploy/workflow-${{ inputs.workflow }}/image.json"
+
+          if [ -n '${{ inputs.image_digest }}' ]; then
+            DIGEST='${{ inputs.image_digest }}'
+            TAG="manual-$(date +%Y%m%d%H%M%S)"
+            echo "Using explicitly provided digest: ${DIGEST}"
+          else
+            if [ ! -f "$MANIFEST_FILE" ]; then
+              echo "::error::${MANIFEST_FILE} does not exist — ${UPSTREAM} has never recorded an approved deploy of this workflow." >&2
+              exit 1
+            fi
+            DIGEST=$(jq -r ".${UPSTREAM}.digest" "$MANIFEST_FILE")
+            TAG=$(jq -r ".${UPSTREAM}.commitId" "$MANIFEST_FILE")
+            if [ -z "$DIGEST" ] || [ "$DIGEST" = "null" ]; then
+              echo "::error::${MANIFEST_FILE} has no ${UPSTREAM}.digest to promote." >&2
+              exit 1
+            fi
+            echo "Resolved ${UPSTREAM}'s manifest digest: ${DIGEST}"
+          fi
+
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Pull from JFrog and push to ECR
+        run: |
+          set -euo pipefail
+          SRC='${{ steps.manifest.outputs.digest }}'
+          DEST="${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}:${{ steps.manifest.outputs.tag }}"
+
+          docker pull "$SRC"
+          docker tag "$SRC" "$DEST"
+          docker push "$DEST"
+
+      - uses: ./.github/actions/workflow-image-release
+        with:
+          workflow: ${{ inputs.workflow }}
+          environment: ${{ inputs.environment }}
+          ecr_repository: ${{ env.ECR_REPOSITORY }}
+          ecr_registry: ${{ steps.ecr.outputs.registry }}
+          source_tag: ${{ steps.manifest.outputs.tag }}
+          deploy_tag: ${{ env.DEPLOY_TAG }}
+
+  # Writes deploy/workflow-<name>/image.json — the "workflow-" prefix keeps a workflow module and an
+  # ECS service from ever colliding on a manifest path, and this file is the only record of which
+  # build a workflow is running, since Terraform deliberately no longer knows.
+  #
+  # Here rather than in the caller for the same reason as _deploy-core.yml's record job: a matrix job
+  # publishes one `outputs` object, so per-entry results have to be written by the entry itself.
+  record:
+    needs: [build, qa-record, prod-promote]
+    if: >-
+      !cancelled() && (
+        needs.build.result == 'success' ||
+        needs['qa-record'].result == 'success' ||
+        needs['prod-promote'].result == 'success'
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Only this job writes to the repository; the build and promote jobs keep contents: read.
+    permissions:
+      contents: write
+    steps:
+      - id: resolve
+        run: |
+          {
+            echo "digest=${{ needs.build.outputs.digest || needs['qa-record'].outputs.digest || needs['prod-promote'].outputs.digest }}"
+            echo "commit_id=${{ needs.build.outputs.commit_id || needs['qa-record'].outputs.commit_id || needs['prod-promote'].outputs.commit_id }}"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: steps.resolve.outputs.digest != ''
+
+      - uses: ./.github/actions/manifest-write
+        if: steps.resolve.outputs.digest != ''
+        with:
+          service: workflow-${{ inputs.workflow }}
+          environment: ${{ inputs.environment }}
+          digest: ${{ steps.resolve.outputs.digest }}
+          commit_id: ${{ steps.resolve.outputs.commit_id }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,37 @@
+{
+  "connector": "HrFeed",
+  "entityKind": "Identity",
+  "columnMappings": {
+    "hr_employee_id": "EmployeeID",
+    "display_name": "FullName",
+    "email": "Email",
+    "given_name": "FirstName",
+    "surname": "LastName",
+    "department": "Department",
+    "title": "JobDescription",
+    "business_unit": "BusinessUnit",
+    "sam_account_name": "SamAccountName",
+    "manager_employee_id": "SupervisorEmployeeID",
+    "manager_name": "SupervisorName",
+    "ad_match_field": "ADFieldToMatch",
+    "ad_match_value": "FieldToMatchValue",
+    "marked_to_retire": "Delete"
+  },
+  "hashFields": [
+    "hr_employee_id",
+    "display_name",
+    "email",
+    "given_name",
+    "surname",
+    "department",
+    "title",
+    "business_unit",
+    "sam_account_name",
+    "upn",
+    "manager_employee_id",
+    "manager_name",
+    "ad_match_field",
+    "ad_match_value",
+    "marked_to_retire"
+  ]
+}

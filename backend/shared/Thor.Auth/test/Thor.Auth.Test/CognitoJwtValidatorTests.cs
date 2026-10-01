@@ -69,6 +69,30 @@ public class CognitoJwtValidatorTests : IDisposable
     }
 
     [Fact]
+    public async Task ValidateAsync_WithCognitoGroups_ReturnsEachGroup()
+    {
+        var claims = BaseClaims();
+        claims["cognito:groups"] = new[] { "admins", "auditors" };
+        var token = CreateToken(claims);
+
+        var result = await _validator.ValidateAsync(token, UserPoolId, AppClientId, Region);
+
+        result.IsValid.Should().BeTrue();
+        result.Groups.Should().BeEquivalentTo("admins", "auditors");
+    }
+
+    [Fact]
+    public async Task ValidateAsync_WithoutCognitoGroups_ReturnsNoGroups()
+    {
+        var token = CreateToken(BaseClaims());
+
+        var result = await _validator.ValidateAsync(token, UserPoolId, AppClientId, Region);
+
+        result.IsValid.Should().BeTrue();
+        result.Groups.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task ValidateAsync_IdToken_IsRejected()
     {
         var claims = BaseClaims();
@@ -122,6 +146,27 @@ public class CognitoJwtValidatorTests : IDisposable
         {
             Issuer = $"https://cognito-idp.{Region}.amazonaws.com/{UserPoolId}",
             SigningCredentials = new SigningCredentials(otherKey, SecurityAlgorithms.RsaSha256),
+            Claims = BaseClaims(),
+            NotBefore = DateTime.UtcNow.AddMinutes(-1),
+            Expires = DateTime.UtcNow.AddHours(1),
+        };
+        var token = new JsonWebTokenHandler().CreateToken(descriptor);
+
+        var result = await _validator.ValidateAsync(token, UserPoolId, AppClientId, Region);
+
+        result.IsValid.Should().BeFalse();
+    }
+
+    // The authorizer picks the tenant from the token's iss, so a token issued by another pool
+    // must never verify against this one — even when it's signed by a key this pool trusts.
+    [Fact]
+    public async Task ValidateAsync_IssuedByDifferentPool_Fails()
+    {
+        var rsaKey = new RsaSecurityKey(_rsa) { KeyId = "test-key-1" };
+        var descriptor = new SecurityTokenDescriptor
+        {
+            Issuer = $"https://cognito-idp.{Region}.amazonaws.com/us-east-1_OtherPool",
+            SigningCredentials = new SigningCredentials(rsaKey, SecurityAlgorithms.RsaSha256),
             Claims = BaseClaims(),
             NotBefore = DateTime.UtcNow.AddMinutes(-1),
             Expires = DateTime.UtcNow.AddHours(1),

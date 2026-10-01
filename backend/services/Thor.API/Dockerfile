@@ -13,6 +13,7 @@ COPY backend/shared/Thor.Auth/Thor.Auth.csproj backend/shared/Thor.Auth/
 COPY backend/shared/Thor.Core/Thor.Core.csproj backend/shared/Thor.Core/
 COPY backend/shared/Thor.DataConnectionManager/Thor.DataConnectionManager.csproj backend/shared/Thor.DataConnectionManager/
 COPY backend/shared/Thor.DataLayer/Thor.DataLayer.csproj backend/shared/Thor.DataLayer/
+COPY backend/shared/Thor.Rules/Thor.Rules.csproj backend/shared/Thor.Rules/
 RUN dotnet restore backend/services/Thor.API/Thor.Api.csproj
 
 COPY backend/shared backend/shared
@@ -21,10 +22,16 @@ RUN dotnet publish backend/services/Thor.API/Thor.Api.csproj --no-restore -c Rel
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 # curl isn't in this base image by default; needed for the ECS healthcheck.
-RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+# ca-certificates is upgraded in the same layer so it sees fresh package lists.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && apt-get install -y --no-install-recommends --only-upgrade ca-certificates \
+    && update-ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
 # Self-signed cert for NLB TLS re-encryption; unused unless TLS_CERT_PFX_PATH is set.
+# openssl is deliberately not purged afterwards: ca-certificates depends on it, so purging wipes the CA trust store.
 RUN apt-get update && apt-get install -y --no-install-recommends openssl \
     && mkdir -p /app/certs \
     && openssl req -x509 -newkey rsa:2048 -nodes \
@@ -38,7 +45,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends openssl \
          -in /app/certs/server.crt \
          -passout pass:thor-internal \
     && rm /app/certs/server.key /app/certs/server.crt \
-    && apt-get purge -y --auto-remove openssl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /app ./

@@ -1,0 +1,110 @@
+name: Release a workflow image
+description: >-
+  Moves a workflow's floating deploy tag onto an already-pushed image, then updates the
+  image-packaged step Lambdas to it. This is the entire deploy — no Terraform apply, because
+  Terraform points the compute at the floating tag and never learns which build is behind it.
+
+inputs:
+  workflow:
+    description: "Workflow name, e.g. ingestion."
+    required: true
+  environment:
+    description: "dev, qa or prod."
+    required: true
+  ecr_repository:
+    description: "ECR repository name holding the image."
+    required: true
+  ecr_registry:
+    description: "ECR registry host, from the ecr-login action."
+    required: true
+  source_tag:
+    description: "Tag the image was just pushed under — normally the commit SHA."
+    required: true
+  deploy_tag:
+    description: "The floating tag Terraform points at. Must match modules/workflow's image_tag."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # Retag server-side rather than docker tag + push: put-image writes only the manifest, so no
+    # layers cross the runner. The repository is IMMUTABLE_WITH_EXCLUSION with a wildcard filter on
+    # exactly this tag, so it is the one tag that may be moved — every :<sha> stays pinned.
+    - name: Move the deploy tag
+      shell: bash
+      env:
+        REPO: ${{ inputs.ecr_repository }}
+        SRC_TAG: ${{ inputs.source_tag }}
+        DEPLOY_TAG: ${{ inputs.deploy_tag }}
+      run: |
+        set -euo pipefail
+
+        IMAGE=$(aws ecr batch-get-image \
+          --repository-name "$REPO" \
+          --image-ids imageTag="$SRC_TAG" \
+          --query 'images[0]' --output json)
+
+        if [ -z "$IMAGE" ] || [ "$IMAGE" = "null" ]; then
+          echo "::error::${REPO}:${SRC_TAG} not found in ECR — the push step did not produce it." >&2
+          exit 1
+        fi
+
+        MANIFEST=$(echo "$IMAGE" | jq -r '.imageManifest')
+        MEDIA_TYPE=$(echo "$IMAGE" | jq -r '.imageManifestMediaType')
+
+        # ImageAlreadyExistsException means the tag already points at this exact manifest — a re-run
+        # of the same commit. That is the desired end state, so it is success, not failure.
+        if OUT=$(aws ecr put-image \
+              --repository-name "$REPO" \
+              --image-tag "$DEPLOY_TAG" \
+              --image-manifest "$MANIFEST" \
+              --image-manifest-media-type "$MEDIA_TYPE" 2>&1); then
+          echo "Moved ${REPO}:${DEPLOY_TAG} to the image tagged ${SRC_TAG}."
+        elif echo "$OUT" | grep -q 'ImageAlreadyExistsException'; then
+          echo "${REPO}:${DEPLOY_TAG} already points at ${SRC_TAG} — nothing to move."
+        else
+          echo "$OUT" >&2
+          exit 1
+        fi
+
+    # ECS needs nothing here: a task definition referencing the floating tag pulls it at launch, so
+    # the next RunTask gets this build with no new revision. Lambda resolves its image at update
+    # time, so each image-packaged function has to be pointed at the tag again.
+    #
+    # PackageType=='Image' is load-bearing: the workflow's S3 trigger handler shares this name prefix
+    # but is a zip function, and update-function-code --image-uri fails against one.
+    - name: Update image-packaged step Lambdas
+      shell: bash
+      env:
+        PREFIX: thor-${{ inputs.environment }}-workflow-${{ inputs.workflow }}-
+        IMAGE_URI: ${{ inputs.ecr_registry }}/${{ inputs.ecr_repository }}:${{ inputs.deploy_tag }}
+      run: |
+        set -euo pipefail
+
+        mapfile -t FUNCS < <(aws lambda list-functions \
+          --query "Functions[?starts_with(FunctionName, '${PREFIX}') && PackageType=='Image'].FunctionName" \
+          --output text | tr '\t' '\n' | sed '/^$/d' | sort)
+
+        if [ "${#FUNCS[@]}" -eq 0 ]; then
+          echo "No image-packaged functions named ${PREFIX}* — this workflow is not enabled yet."
+          echo "The image is pushed and ${IMAGE_URI} points at it, so enabling the workflow picks up this build."
+          exit 0
+        fi
+
+        printf 'Updating %s\n' "${FUNCS[@]}"
+
+        # Fire all the updates, then wait: they are independent, and waiting on each in turn would
+        # serialise what Lambda is happy to do concurrently.
+        for FUNC in "${FUNCS[@]}"; do
+          aws lambda update-function-code \
+            --function-name "$FUNC" \
+            --image-uri "$IMAGE_URI" \
+            --publish >/dev/null
+        done
+
+        for FUNC in "${FUNCS[@]}"; do
+          aws lambda wait function-updated --function-name "$FUNC"
+          echo "  ${FUNC} updated."
+        done
+
+        echo "${#FUNCS[@]} function(s) now running ${IMAGE_URI}."

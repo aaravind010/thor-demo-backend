@@ -1,6 +1,6 @@
 namespace Thor.TaskApi.Constants;
 
-/// <summary>Shared constants for the presigned upload endpoint.</summary>
+/// <summary>Shared constants used across TaskApi endpoints.</summary>
 public static class UploadConstants
 {
     public const string TenantHeaderName = "X-THOR-TENANT-ID";

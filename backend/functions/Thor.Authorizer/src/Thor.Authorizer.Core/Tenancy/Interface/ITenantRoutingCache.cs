@@ -4,5 +4,7 @@ namespace Thor.Authorizer.Core.Tenancy.Interface;
 
 public interface ITenantRoutingCache
 {
-    Task<TenantRoute?> GetOrAddAsync(string subdomain);
+    Task<TenantRoute?> GetByUserPoolIdAsync(string userPoolId);
+
+    Task<TenantRoute?> GetByTenantIdAsync(string tenantId);
 }

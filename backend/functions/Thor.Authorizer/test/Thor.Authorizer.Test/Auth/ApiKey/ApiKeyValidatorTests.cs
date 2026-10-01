@@ -17,33 +17,30 @@ public class ApiKeyValidatorTests
         new(repository, new Pbkdf2ApiKeyHasher(TestSaltProvider.Create()), timeProvider ?? TimeProvider.System);
 
     [Fact]
-    public async Task ValidateAsync_SameKeyIdUnderDifferentTenants_ResolvesIndependently()
+    public async Task ValidateAsync_ValidKey_ReturnsTenantAndPrincipalFromStoredRecord()
     {
-        var tenantAKey = ApiKeyRecordFixtures.Active(tenantId: "tenant-a", keyId: "key-1", secret: Secret, principalId: "principal-a");
-        var tenantBKey = ApiKeyRecordFixtures.Active(tenantId: "tenant-b", keyId: "key-1", secret: Secret, principalId: "principal-b");
-        var repository = new InMemoryApiKeyRepository([tenantAKey, tenantBKey]);
-        var validator = CreateValidator(repository);
-
-        var resultA = await validator.ValidateAsync("tenant-a", $"key-1.{Secret}");
-        var resultB = await validator.ValidateAsync("tenant-b", $"key-1.{Secret}");
-
-        resultA.IsValid.Should().BeTrue();
-        resultA.PrincipalId.Should().Be("principal-a");
-        resultB.IsValid.Should().BeTrue();
-        resultB.PrincipalId.Should().Be("principal-b");
-    }
-
-    [Fact]
-    public async Task ValidateAsync_CorrectKeyButWrongTenant_FailsAsNotFound()
-    {
-        var key = ApiKeyRecordFixtures.Active(tenantId: "tenant-a", keyId: "key-1", secret: Secret);
+        var key = ApiKeyRecordFixtures.Active(tenantId: "tenant-a", keyId: "key-1", secret: Secret, principalId: "principal-a");
         var repository = new InMemoryApiKeyRepository([key]);
         var validator = CreateValidator(repository);
 
-        var result = await validator.ValidateAsync("tenant-b", $"key-1.{Secret}");
+        var result = await validator.ValidateAsync($"key-1.{Secret}");
+
+        result.IsValid.Should().BeTrue();
+        result.TenantId.Should().Be("tenant-a");
+        result.PrincipalId.Should().Be("principal-a");
+    }
+
+    [Fact]
+    public async Task ValidateAsync_UnknownKeyId_FailsAsNotFound()
+    {
+        var key = ApiKeyRecordFixtures.Active(keyId: "key-1", secret: Secret);
+        var repository = new InMemoryApiKeyRepository([key]);
+        var validator = CreateValidator(repository);
+
+        var result = await validator.ValidateAsync($"key-2.{Secret}");
 
         result.IsValid.Should().BeFalse();
-        result.FailureReason.Should().Be("key not found for tenant");
+        result.FailureReason.Should().Be("key not found");
     }
 
     [Fact]
@@ -53,7 +50,7 @@ public class ApiKeyValidatorTests
         var repository = new InMemoryApiKeyRepository([key]);
         var validator = CreateValidator(repository);
 
-        var result = await validator.ValidateAsync(key.TenantId, $"{key.KeyId}.{Secret}");
+        var result = await validator.ValidateAsync($"{key.KeyId}.{Secret}");
 
         result.IsValid.Should().BeFalse();
         result.FailureReason.Should().Be("key expired");
@@ -66,7 +63,7 @@ public class ApiKeyValidatorTests
         var repository = new InMemoryApiKeyRepository([key]);
         var validator = CreateValidator(repository);
 
-        var result = await validator.ValidateAsync(key.TenantId, $"{key.KeyId}.{Secret}");
+        var result = await validator.ValidateAsync($"{key.KeyId}.{Secret}");
 
         result.IsValid.Should().BeFalse();
         result.FailureReason.Should().Be("key not active");
@@ -79,7 +76,7 @@ public class ApiKeyValidatorTests
         var repository = new InMemoryApiKeyRepository([key]);
         var validator = CreateValidator(repository);
 
-        var result = await validator.ValidateAsync(key.TenantId, $"{key.KeyId}.wrong-secret");
+        var result = await validator.ValidateAsync($"{key.KeyId}.wrong-secret");
 
         result.IsValid.Should().BeFalse();
         result.FailureReason.Should().Be("secret mismatch");
@@ -94,7 +91,7 @@ public class ApiKeyValidatorTests
         var repository = new InMemoryApiKeyRepository([]);
         var validator = CreateValidator(repository);
 
-        var result = await validator.ValidateAsync("tenant-1", material);
+        var result = await validator.ValidateAsync(material);
 
         result.IsValid.Should().BeFalse();
         result.FailureReason.Should().Be("malformed api key material");

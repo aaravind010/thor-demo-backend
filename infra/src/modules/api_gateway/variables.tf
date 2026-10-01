@@ -52,7 +52,7 @@ variable "tags" {
 
 variable "domain_name" {
   type        = string
-    description = "Public hostname for this API, e.g. api.dev.example.com — served by the CloudFront distribution in cdn.tf, which is what owns the name. \"\" (default) leaves the distribution on its own *.cloudfront.net domain: no alias record and no custom certificate."
+  description = "Public hostname for this API, e.g. api.dev.example.com — served by the CloudFront distribution in cdn.tf, which is what owns the name. \"\" (default) leaves the distribution on its own *.cloudfront.net domain: no alias record and no custom certificate."
   default     = ""
 }
 

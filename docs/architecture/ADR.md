@@ -100,12 +100,27 @@ Authentication is enforced at **API Gateway (REST API)** so unauthenticated
 traffic never reaches the NLB or Thor API:
 
 - **Users** authenticate via **Amazon Cognito** (one user pool per tenant; local
-  users and/or the tenant's federated SAML/OIDC IdPs). The resulting JWT carries a
-  verified tenant claim.
+  users and/or the tenant's federated SAML/OIDC IdPs). The token's issuer names
+  the tenant's pool, and `auth.tenant_routing.user_pool_id` is unique, so the
+  pool maps back to exactly one tenant.
 - **Connectors / external services** authenticate with an **API key**, validated
-  by a **Lambda authorizer** (REST API, `REQUEST` type) that resolves the
-  candidate tenant from the subdomain and verifies the hashed key against the
-  **Master metadata DB** (§5.2) before the request is forwarded.
+  by a **Lambda authorizer** (REST API, `REQUEST` type) that verifies the hashed
+  key against the **Master metadata DB** (§5.2) and takes the tenant from the
+  key's stored binding before the request is forwarded.
+- **Before sign-in**, the SPA calls the unauthenticated
+  `GET /v1/login-config/{subdomain}` to learn which pool/app client to use. These
+  are public values, and the subdomain here is a discovery hint only: it grants
+  nothing.
+
+> **Decision — tenant comes from the credential, never the hostname.** Behind
+> CloudFront → API Gateway the authorizer never sees the tenant's hostname: `Host`
+> is the execute-api origin's, and any forwarded-host header is caller-controlled.
+> So the authorizer resolves the tenant **only** from the verified credential (the
+> Cognito pool in `iss`, a Thor-issued token's tenant claim, or an API key's stored
+> binding) and reads no host or tenant header. This drops the earlier
+> subdomain cross-check: a leaked credential is honored on any hostname, not only
+> its own tenant's. That's accepted because the credential was always the real
+> authority, and the cross-check couldn't be enforced from a trusted source.
 
 > **Decision — Cognito M2M rejected.** Cognito `client_credentials` (M2M) was
 > evaluated as the connector credential and rejected because (a) it requires a
@@ -118,7 +133,7 @@ traffic never reaches the NLB or Thor API:
 ### 5.2 API key handling (decision)
 
 - **Keys live in the Master metadata DB, not the tenant DB.** The authorizer
-  already resolves `subdomain → tenant` from the Master DB on every request, so
+  already resolves tenant routing from the Master DB on every request, so
   keeping keys there makes authentication a **single lookup** and keeps tenant
   databases entirely off the hot auth path — no per-tenant RDS Proxy connection is
   opened just to check a key (avoids the connection pressure of §6.3). An API key
@@ -130,11 +145,11 @@ traffic never reaches the NLB or Thor API:
   key is shown to the customer exactly once at creation.
 - Each key row carries: tenant binding, scopes, expiry, revocation, and last-used
   timestamp, and is independently revocable.
-- **Tenant resolution for a key:** the subdomain gives a *candidate* tenant; the
-  candidate resolves the tenant in the Master DB, and the presented key is looked
-  up by `keyId`. The request proceeds only if the key's stored tenant binding
-  matches the subdomain-derived candidate. Any mismatch fails closed and emits a
-  security event (§10). Subdomain alone is never sufficient.
+- **Tenant resolution for a key:** the presented key is looked up by its globally
+  unique `keyId`, and the secret is verified against that row's hash. Only then is
+  the row's stored tenant binding taken as the request's tenant. Nothing in the
+  request (hostname, headers) can select or override the tenant. An unknown,
+  revoked, expired or mismatched key fails closed.
 - **Create/revoke API (Thor API):** a tenant-scoped API issues keys (generate
   secret, store salt + HMAC, return raw key once) and revokes them (set
   `revokedAt`). Same hashing code path (`Thor.Auth`) is shared by issuance and
@@ -157,8 +172,9 @@ generation is treated as security-critical:
 
 | Entry point | Candidate source | Authoritative verification |
 |-------------|------------------|----------------------------|
-| User API request | JWT tenant claim | Cognito-verified token; cross-checked to subdomain |
-| Connector API request | Subdomain | Hashed API key in Master DB; stored tenant binding cross-checked to subdomain |
+| User API request | Cognito pool in the token's `iss` → unique `tenant_routing.user_pool_id` | Token verified against that tenant's pool (issuer, JWKS signature, `token_use`, `client_id`) |
+| Connector API request (Thor-issued JWT) | Token's tenant claim | Thor signature verified; tenant must exist in Master DB |
+| Connector API request (API key) | `keyId` | Hashed API key in Master DB; tenant = the key's stored binding |
 | S3 upload / ingestion | Object key prefix | Re-verified against tenant metadata store |
 
 **Rule:** the candidate source only *narrows* the lookup; the request/job is
@@ -205,7 +221,7 @@ grows.** The cluster-pool is expressed entirely in the routing table.
   referenced id as a plain column with **no SQL foreign key** — Postgres
   cannot enforce a constraint across two physically separate databases.
   Referential integrity for these columns is application-level only. Within
-  the Master DB itself (e.g. `authentication_types.connector_type_id`,
+  the Master DB itself (e.g. `authentication_type_connector_types.connector_type_id`,
   `connector_config_fields.connector_type_id` → `connector_types.id`), use a
   real FK as usual — the two tables are in the same database. This is the
   same pattern already used for `scan_connector_config_values.config_id` →

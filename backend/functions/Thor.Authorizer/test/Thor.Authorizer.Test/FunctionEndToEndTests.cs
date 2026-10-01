@@ -25,6 +25,11 @@ public class FunctionEndToEndTests
 {
     private const string MethodArn = "arn:aws:execute-api:us-east-1:123456789012:abc123/prod/GET/orders";
 
+    // The authorizer widens Resource to the whole stage so API Gateway's identity-source-only
+    // caching (see authorizer.tf) doesn't reuse a route-specific cached policy for a different
+    // route/method and produce a false Deny.
+    private const string ApiWideResource = "arn:aws:execute-api:us-east-1:123456789012:abc123/prod/*";
+
     private static IServiceProvider BuildSeededServiceProvider(TenantRoute route, ApiKeyRecord apiKey)
     {
         var services = new ServiceCollection();
@@ -60,7 +65,7 @@ public class FunctionEndToEndTests
     public async Task FunctionHandler_ValidApiKey_ReturnsAllowPolicyWithExpectedContext()
     {
         var hasher = new Pbkdf2ApiKeyHasher(TestSaltProvider.Create());
-        var route = new TenantRoute("tenant-1", "acme", "us-east-1_ExamplePool", "client-abc123", "us-east-1");
+        var route = new TenantRoute("tenant-1", "us-east-1_ExamplePool", "client-abc123", "us-east-1");
         var apiKey = new ApiKeyRecord("key-1", route.TenantId, await hasher.HashAsync("s3cr3t"), "active", ExpiresAt: null, "principal-1");
 
         var function = new Thor.Authorizer.Function.Function(BuildSeededServiceProvider(route, apiKey));
@@ -70,14 +75,13 @@ public class FunctionEndToEndTests
             MethodArn = MethodArn,
             Headers = new Dictionary<string, string>
             {
-                ["Host"] = "acme.api.thor.example.com",
                 ["Authorization"] = "ApiKey key-1.s3cr3t",
             },
         };
 
         var response = await function.FunctionHandler(request, Substitute.For<ILambdaContext>());
 
-        response.PolicyDocument.Statement.Should().ContainSingle(s => s.Effect == "Allow" && s.Resource.Contains(MethodArn));
+        response.PolicyDocument.Statement.Should().ContainSingle(s => s.Effect == "Allow" && s.Resource.Contains(ApiWideResource));
         response.PrincipalID.Should().Be("principal-1");
         response.Context["tenant_id"].Should().Be("tenant-1");
         response.Context["caller_type"].Should().Be("machine");
@@ -85,10 +89,10 @@ public class FunctionEndToEndTests
     }
 
     [Fact]
-    public async Task FunctionHandler_UnknownTenant_ReturnsDenyPolicy()
+    public async Task FunctionHandler_UnknownApiKey_ReturnsDenyPolicy()
     {
         var hasher = new Pbkdf2ApiKeyHasher(TestSaltProvider.Create());
-        var route = new TenantRoute("tenant-1", "acme", "us-east-1_ExamplePool", "client-abc123", "us-east-1");
+        var route = new TenantRoute("tenant-1", "us-east-1_ExamplePool", "client-abc123", "us-east-1");
         var apiKey = new ApiKeyRecord("key-1", route.TenantId, await hasher.HashAsync("s3cr3t"), "active", ExpiresAt: null, "principal-1");
 
         var function = new Thor.Authorizer.Function.Function(BuildSeededServiceProvider(route, apiKey));
@@ -98,8 +102,7 @@ public class FunctionEndToEndTests
             MethodArn = MethodArn,
             Headers = new Dictionary<string, string>
             {
-                ["Host"] = "unknown-tenant.api.thor.example.com",
-                ["Authorization"] = "ApiKey key-1.s3cr3t",
+                ["Authorization"] = "ApiKey unknown-key.s3cr3t",
             },
         };
 

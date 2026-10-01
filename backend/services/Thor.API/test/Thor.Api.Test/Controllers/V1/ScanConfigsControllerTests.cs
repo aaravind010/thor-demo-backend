@@ -68,15 +68,15 @@ public class ScanConfigsControllerTests
         return id;
     }
 
-    private Guid SeedAuthenticationType(short connectorType, string name)
+    private Guid SeedAuthenticationType(string name, params short[] connectorTypes)
     {
         var id = Guid.NewGuid();
-        SeedMasterDb(db => db.AuthenticationTypes.Add(new AuthenticationType
+        SeedMasterDb(db =>
         {
-            Id = id,
-            Name = name,
-            ConnectorTypeId = connectorType,
-        }));
+            db.AuthenticationTypes.Add(new AuthenticationType { Id = id, Name = name });
+            db.AuthenticationTypeConnectorTypes.AddRange(connectorTypes.Select(c =>
+                new AuthenticationTypeConnectorType { AuthenticationTypeId = id, ConnectorTypeId = c }));
+        });
         return id;
     }
 
@@ -92,12 +92,12 @@ public class ScanConfigsControllerTests
         return id;
     }
 
-    // Seeds a source, an auth method whose type matches the source's connector type, and no
+    // Seeds a source, an auth method whose type supports the source's connector type, and no
     // required config fields — the minimal set of rows CreateAsync needs to succeed.
     private (Guid SourceId, Guid AuthMethodId) SeedValidScanConfigPrerequisites()
     {
         SeedConnectorType(ConnectorTypeId, "Active Directory");
-        var authTypeId = SeedAuthenticationType(ConnectorTypeId, "API Key");
+        var authTypeId = SeedAuthenticationType("API Key", ConnectorTypeId);
         var sourceId = SeedSource(ConnectorTypeId, "source-1");
         var authMethodId = SeedAuthenticationMethod(authTypeId, "auth-method-1");
 
@@ -314,13 +314,13 @@ public class ScanConfigsControllerTests
         result.Result.Should().BeOfType<BadRequestObjectResult>();
     }
 
-    /// <summary>An auth method whose type belongs to a different connector type than the sources is rejected.</summary>
+    /// <summary>An auth method whose type isn't mapped to the sources' connector type is rejected.</summary>
     [Fact]
     public async Task Create_AuthMethodConnectorTypeMismatch_ReturnsBadRequest()
     {
         var (sourceId, _) = SeedValidScanConfigPrerequisites();
         SeedConnectorType(ConnectorTypeId + 1, "Other Connector");
-        var mismatchedAuthTypeId = SeedAuthenticationType(ConnectorTypeId + 1, "Other Auth Type");
+        var mismatchedAuthTypeId = SeedAuthenticationType("Other Auth Type", ConnectorTypeId + 1);
         var mismatchedAuthMethodId = SeedAuthenticationMethod(mismatchedAuthTypeId, "auth-method-2");
         var controller = CreateController();
         SetHeaders(controller);
@@ -328,6 +328,39 @@ public class ScanConfigsControllerTests
         var result = await controller.Create(ValidRequest(sourceId, mismatchedAuthMethodId), CancellationToken.None);
 
         result.Result.Should().BeOfType<BadRequestObjectResult>();
+    }
+
+    /// <summary>An auth type with no connector mappings at all is rejected.</summary>
+    [Fact]
+    public async Task Create_AuthTypeWithNoConnectorMappings_ReturnsBadRequest()
+    {
+        var (sourceId, _) = SeedValidScanConfigPrerequisites();
+        var unmappedAuthTypeId = SeedAuthenticationType("Unmapped Auth Type");
+        var unmappedAuthMethodId = SeedAuthenticationMethod(unmappedAuthTypeId, "auth-method-2");
+        var controller = CreateController();
+        SetHeaders(controller);
+
+        var result = await controller.Create(ValidRequest(sourceId, unmappedAuthMethodId), CancellationToken.None);
+
+        result.Result.Should().BeOfType<BadRequestObjectResult>();
+    }
+
+    /// <summary>An auth type mapped to several connector types is accepted for any of them.</summary>
+    [Fact]
+    public async Task Create_AuthTypeSupportingMultipleConnectorTypes_ReturnsCreated()
+    {
+        SeedConnectorType(ConnectorTypeId, "Active Directory");
+        SeedConnectorType(ConnectorTypeId + 1, "Other Connector");
+        var authTypeId = SeedAuthenticationType("Local Username and Password", ConnectorTypeId + 1, ConnectorTypeId);
+        var sourceId = SeedSource(ConnectorTypeId, "source-1");
+        var authMethodId = SeedAuthenticationMethod(authTypeId, "auth-method-1");
+        var controller = CreateController();
+        SetHeaders(controller);
+
+        var result = await controller.Create(ValidRequest(sourceId, authMethodId), CancellationToken.None);
+
+        var objectResult = result.Result.Should().BeOfType<ObjectResult>().Subject;
+        objectResult.StatusCode.Should().Be(StatusCodes.Status201Created);
     }
 
     /// <summary>Omitting a value for a required connector config field is rejected.</summary>

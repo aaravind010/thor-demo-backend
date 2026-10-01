@@ -280,4 +280,46 @@ public class SourcesControllerTests
         var response = okResult.Value.Should().BeAssignableTo<IReadOnlyList<SourceResponse>>().Subject;
         response.Should().BeEmpty();
     }
+
+    /// <summary>An existing source id returns that one row.</summary>
+    [Fact]
+    public async Task Get_Existing_ReturnsSource()
+    {
+        var id = SeedSource(ConnectorTypeId, "source-1");
+        var controller = CreateController();
+        SetHeaders(controller);
+
+        var result = await controller.Get(id, CancellationToken.None);
+
+        result.Result.Should().BeOfType<OkObjectResult>()
+            .Which.Value.Should().BeOfType<SourceResponse>().Which.Name.Should().Be("source-1");
+    }
+
+    /// <summary>An id with no row in the tenant database is 404, not an empty body.</summary>
+    [Fact]
+    public async Task Get_Missing_ReturnsNotFound()
+    {
+        var controller = CreateController();
+        SetHeaders(controller);
+
+        var result = await controller.Get(Guid.NewGuid(), CancellationToken.None);
+
+        result.Result.Should().BeOfType<NotFoundResult>();
+    }
+
+    /// <summary>The get-by-id path fails closed for an unroutable tenant, same as list.</summary>
+    [Fact]
+    public async Task Get_TenantNotFound_ReturnsForbidden()
+    {
+        var manager = Substitute.For<ITenantConnectionManager>();
+        manager.GetTenantDbContextAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(call => Task.FromException<TenantDbContext>(new TenantNotFoundException(call.Arg<Guid>())));
+        var controller = CreateController(manager);
+        SetHeaders(controller);
+
+        var result = await controller.Get(Guid.NewGuid(), CancellationToken.None);
+
+        result.Result.Should().BeOfType<StatusCodeResult>()
+            .Which.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
+    }
 }
