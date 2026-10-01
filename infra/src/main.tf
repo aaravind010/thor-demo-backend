@@ -30,6 +30,8 @@ module "network" {
   az_count             = var.az_count
   private_subnet_cidrs = var.private_subnet_cidrs
   enable_vpc_endpoints = var.enable_vpc_endpoints
+  nat_gateway_mode     = var.nat_gateway_mode
+  public_subnet_cidrs  = var.public_subnet_cidrs
   tags                 = var.tags
 }
 

@@ -87,7 +87,10 @@ resource "aws_route_table" "private" {
 resource "aws_route_table_association" "private" {
   count          = length(aws_subnet.private)
   subnet_id      = aws_subnet.private[count.index].id
-  route_table_id = aws_route_table.private.id
+  route_table_id = local.per_az_nat ? aws_route_table.private_az[count.index].id : aws_route_table.private.id
+
+  # per_az: move a subnet only once its new route table already carries the S3 endpoint route.
+  depends_on = [aws_vpc_endpoint_route_table_association.s3_private_az]
 }
 
 # HTTPS-only access from within the VPC to the interface endpoints

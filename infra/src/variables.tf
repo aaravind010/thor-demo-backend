@@ -45,6 +45,18 @@ variable "enable_vpc_endpoints" {
   default     = true
 }
 
+variable "nat_gateway_mode" {
+  type        = string
+  description = "NAT Gateway egress for the private subnets: none, single (one NAT for the VPC), or per_az (one NAT per AZ)"
+  default     = "none"
+}
+
+variable "public_subnet_cidrs" {
+  type        = list(string)
+  description = "CIDR blocks for public subnets, one per AZ (hold only the NAT Gateways)"
+  default     = []
+}
+
 # --- compute (shared ECS cluster running thor, task-api, intelligence-engine) ---
 
 variable "enable_compute" {

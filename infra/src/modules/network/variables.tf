@@ -25,6 +25,23 @@ variable "enable_vpc_endpoints" {
   default     = true
 }
 
+variable "nat_gateway_mode" {
+  type        = string
+  description = "NAT Gateway egress for the private subnets: none, single (one NAT for the VPC), or per_az (one NAT per AZ)"
+  default     = "none"
+
+  validation {
+    condition     = contains(["none", "single", "per_az"], var.nat_gateway_mode)
+    error_message = "nat_gateway_mode must be one of: none, single, per_az."
+  }
+}
+
+variable "public_subnet_cidrs" {
+  type        = list(string)
+  description = "CIDR blocks for public subnets, one per AZ (hold only the NAT Gateways). Unused when nat_gateway_mode = none"
+  default     = []
+}
+
 variable "tags" {
   type        = map(string)
   description = "Additional resource-specific tags (Project/Environment/ManagedBy are already applied via provider default_tags)"
