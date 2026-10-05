@@ -6,13 +6,24 @@ resource "aws_security_group" "service" {
   description = each.value.expose_via_nlb ? "ECS service ingress from NLB SG, egress open (VPC-only until NAT/IGW exists)" : "ECS service ingress restricted to public-facing peers, egress open (VPC-only until NAT/IGW exists)"
   vpc_id      = var.vpc_id
 
-  # cidr_blocks is 0.0.0.0/0, not var.vpc_cidr — no NAT/IGW route exists for private subnets today, so this only widens the boundary (not actual reachability) until a NAT Gateway is added, at which point it grants full internet egress immediately with no separate decision.
+  # Internet egress is HTTPS only (tenant log vendors, through the NAT); plain HTTP is closed.
+  # Package-registry hostnames are blocked separately by the network module's DNS Firewall.
+  # TODO: tenant log vendors on a port other than 443 (e.g. Splunk HEC 8088, syslog over TLS 6514) can't
+  # connect — add a scoped egress rule for that port when such a vendor is onboarded.
   egress {
-    description = "All traffic"
+    description = "HTTPS to the internet (tenant log vendors via NAT)"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "Within VPC"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.vpc_cidr]
   }
 
   tags = merge(var.tags, {
