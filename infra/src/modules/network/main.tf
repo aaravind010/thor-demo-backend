@@ -93,6 +93,50 @@ resource "aws_route_table_association" "private" {
   depends_on = [aws_vpc_endpoint_route_table_association.s3_private_az]
 }
 
+# Adopts the VPC's default NACL (every subnet uses it). Inbound: anything from inside the VPC — the private subnets
+# reach the NAT on 443, so the public subnets must accept that — plus return traffic from the internet on ephemeral
+# ports. Outbound: everything; egress is controlled by security groups and the DNS Firewall, not here.
+resource "aws_default_network_acl" "this" {
+  default_network_acl_id = aws_vpc.thor-vpc.default_network_acl_id
+
+  ingress {
+    rule_no    = 90
+    action     = "allow"
+    protocol   = "-1"
+    cidr_block = var.vpc_cidr
+    from_port  = 0
+    to_port    = 0
+  }
+
+  ingress {
+    rule_no    = 100
+    action     = "allow"
+    protocol   = "tcp"
+    cidr_block = "0.0.0.0/0"
+    from_port  = 1024
+    to_port    = 65535
+  }
+
+  egress {
+    rule_no    = 100
+    action     = "allow"
+    protocol   = "-1"
+    cidr_block = "0.0.0.0/0"
+    from_port  = 0
+    to_port    = 0
+  }
+
+  tags = merge(var.tags, {
+    Name = "${local.name_prefix}-default-nacl"
+  })
+
+  # Subnets stay on the default NACL implicitly and can't be detached from it, so the association list isn't managed here.
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [subnet_ids, tags, tags_all]
+  }
+}
+
 # HTTPS-only access from within the VPC to the interface endpoints
 resource "aws_security_group" "vpc_endpoints" {
   count       = var.enable_vpc_endpoints ? 1 : 0
