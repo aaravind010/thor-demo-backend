@@ -13,6 +13,7 @@ COPY backend/shared/Thor.Auth/Thor.Auth.csproj backend/shared/Thor.Auth/
 COPY backend/shared/Thor.Core/Thor.Core.csproj backend/shared/Thor.Core/
 COPY backend/shared/Thor.DataConnectionManager/Thor.DataConnectionManager.csproj backend/shared/Thor.DataConnectionManager/
 COPY backend/shared/Thor.DataLayer/Thor.DataLayer.csproj backend/shared/Thor.DataLayer/
+COPY backend/shared/Thor.Graph/Thor.Graph.csproj backend/shared/Thor.Graph/
 COPY backend/shared/Thor.Rules/Thor.Rules.csproj backend/shared/Thor.Rules/
 RUN dotnet restore backend/services/Thor.API/Thor.Api.csproj
 

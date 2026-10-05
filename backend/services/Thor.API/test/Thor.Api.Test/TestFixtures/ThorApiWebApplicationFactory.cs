@@ -32,6 +32,10 @@ public sealed class ThorApiWebApplicationFactory : WebApplicationFactory<Program
             ["THOR_TASKAPI_JWT_PRIVATE_KEY"] = signingKey.ExportPkcs8PrivateKeyPem(),
             ["THOR_API_KEY_PEPPER"] = "test-pepper",
             ["THOR_INTELLIGENCE_ENGINE_GRPC_ADDRESS"] = "http://localhost:50051",
+            ["THOR_NEPTUNE_ENDPOINT"] = "localhost",
+            ["THOR_NEPTUNE_PORT"] = "8182",
+            ["THOR_NEPTUNE_ENABLESSL"] = "false",
+            ["THOR_AWS_REGION"] = "us-east-1",
         };
 
         foreach (var (name, value) in startup)

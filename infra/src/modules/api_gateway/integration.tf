@@ -19,13 +19,16 @@ resource "aws_apigatewayv2_integration" "proxy" {
   integration_uri        = var.nlb_listener_arn
   payload_format_version = "1.0"
 
-  # X-THOR-TENANT-ID and X-THOR-CALLER-GROUPS come from the authorizer's verified context, never
-  # the client — overwrite replaces any value the caller sent. Thor.Api's admin gate trusts the
-  # groups header (RequireTenantAdminAttribute).
+  # X-THOR-TENANT-ID, X-THOR-CALLER-GROUPS and X-THOR-PRINCIPAL-ID come from the authorizer's
+  # verified context, never the client — overwrite replaces any value the caller sent. Thor.Api's
+  # admin gate trusts the groups header (RequireTenantAdminAttribute). X-THOR-CONNECTION-ID is only
+  # ever set by the WebSocket API (modules/api_gateway_ws), so it's removed here.
   request_parameters = {
     "overwrite:path"                        = "/$request.path.proxy"
     "overwrite:header.X-THOR-TENANT-ID"     = "$context.authorizer.tenant_id"
     "overwrite:header.X-THOR-CALLER-GROUPS" = "$context.authorizer.groups"
+    "overwrite:header.X-THOR-PRINCIPAL-ID"  = "$context.authorizer.principal_id"
+    "remove:header.X-THOR-CONNECTION-ID"    = "''"
   }
 
   # Must agree with the NLB's own TLS state — plain HTTP unless a real cert is configured there too.
@@ -51,6 +54,8 @@ resource "aws_apigatewayv2_integration" "proxy_root" {
     "overwrite:path"                        = "/"
     "overwrite:header.X-THOR-TENANT-ID"     = "$context.authorizer.tenant_id"
     "overwrite:header.X-THOR-CALLER-GROUPS" = "$context.authorizer.groups"
+    "overwrite:header.X-THOR-PRINCIPAL-ID"  = "$context.authorizer.principal_id"
+    "remove:header.X-THOR-CONNECTION-ID"    = "''"
   }
 
   dynamic "tls_config" {
@@ -82,7 +87,7 @@ resource "aws_apigatewayv2_route" "proxy" {
 # Login discovery: the SPA calls this before sign-in, so there's no Authorization header yet —
 # behind the authorizer it would 401 at API Gateway. It only returns a tenant's public Cognito
 # pool/client ids (Thor.Api LoginConfigController). Its own integration because there's no
-# authorizer context to map on a NONE route; the tenant/groups headers are removed instead so a
+# authorizer context to map on a NONE route; the X-THOR-* headers are removed instead so a
 # caller-supplied value can never reach Thor.Api through this route.
 resource "aws_apigatewayv2_integration" "login_config" {
   api_id = aws_apigatewayv2_api.thor-apigw-api.id
@@ -98,6 +103,8 @@ resource "aws_apigatewayv2_integration" "login_config" {
     "overwrite:path"                     = "/v1/login-config/$request.path.subdomain"
     "remove:header.X-THOR-TENANT-ID"     = "''"
     "remove:header.X-THOR-CALLER-GROUPS" = "''"
+    "remove:header.X-THOR-PRINCIPAL-ID"  = "''"
+    "remove:header.X-THOR-CONNECTION-ID" = "''"
   }
 
   dynamic "tls_config" {
@@ -136,6 +143,8 @@ resource "aws_apigatewayv2_integration" "connector_api_keys" {
   request_parameters = {
     "overwrite:path"                     = "/v1/connector-api-keys"
     "remove:header.X-THOR-CALLER-GROUPS" = "''"
+    "remove:header.X-THOR-PRINCIPAL-ID"  = "''"
+    "remove:header.X-THOR-CONNECTION-ID" = "''"
   }
 
   dynamic "tls_config" {

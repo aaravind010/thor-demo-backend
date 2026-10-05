@@ -91,3 +91,13 @@ variable "tls_server_name" {
   description = "Hostname to verify against the NLB listener's cert (its CN/SAN) and send via SNI, for NLB <-> ECS TLS re-encryption. \"\" (default) leaves the integration on plain HTTP, matching the NLB's own default (non-TLS) listener — must agree with whatever set the NLB's cert."
   default     = ""
 }
+
+variable "websocket_api_id" {
+  type        = string
+  description = "WebSocket API id (modules/api_gateway_ws) — the CloudFront /ws behaviour's origin"
+}
+
+variable "websocket_stage_name" {
+  type        = string
+  description = "WebSocket API stage name — the path the CloudFront /ws behaviour rewrites the handshake to"
+}

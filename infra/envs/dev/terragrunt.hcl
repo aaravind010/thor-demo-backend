@@ -18,7 +18,7 @@ inputs = {
   private_subnet_cidrs = ["10.0.10.0/24", "10.0.11.0/24"]
   enable_vpc_endpoints = true
   public_subnet_cidrs  = ["10.0.0.0/24", "10.0.1.0/24"]
-  nat_gateway_mode     = "single" # dev target: "single"
+  nat_gateway_mode     = "single"  # also the egress path for API Gateway WebSocket @connections pushes
 
   # --- DNS Firewall default deny (active only while nat_gateway_mode != "none") ---
   # Package registries are always blocked; AWS, VPC-internal and egress_allowed_domains names always resolve.

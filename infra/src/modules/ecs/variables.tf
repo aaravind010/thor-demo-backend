@@ -79,6 +79,12 @@ variable "rds_proxy_resource_id" {
   description = "RDS Proxy resource ID (prx-...) — scopes each DB-accessing service's rds-db:connect ARN. The services connect through the proxy, so the ARN must name the proxy, not the cluster. Empty skips the grant (no DB services)."
 }
 
+variable "neptune_cluster_resource_id" {
+  type        = string
+  default     = ""
+  description = "Neptune cluster resource ID (cluster-...) — scopes thor-api's read-only neptune-db grant. The neptune-db action namespace is keyed by this ID, not the cluster identifier or ARN. Empty skips the grant (Neptune disabled)."
+}
+
 variable "master_db_app_user" {
   type        = string
   default     = "thor_app"
@@ -100,6 +106,12 @@ variable "execution_secret_arns" {
 variable "uploads_bucket_arn" {
   type        = string
   description = "ARN of the tenant uploads bucket task-api presigns against. Required — the uploads module is always instantiated, so there is no no-bucket case to guard for."
+}
+
+variable "websocket_connections_arn" {
+  type        = string
+  description = "execute-api ARN of the WebSocket API stage's @connections (modules/api_gateway_ws connections_arn) — thor-api's task role gets ManageConnections on it. Only read when compute is enabled, which is also when that module exists."
+  default     = ""
 }
 
 variable "cross_account_pull_principal_arns" {

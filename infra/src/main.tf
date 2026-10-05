@@ -82,6 +82,17 @@ locals {
       # neither the Service Connect alias nor any trusted chain — the same tradeoff Thor.Api's gRPC
       # client already makes for intelligence-engine, and the NLB->ECS leg is VPC-internal.
       "ReverseProxy__Clusters__task-api-cluster__HttpClient__DangerousAcceptAnyServerCertificate" = "true"
+
+      # Read-only graph reads (GraphRelationshipReader), same settings the workflows use. Program.cs
+      # requires all four; with enable_neptune off the endpoint is empty, so thor-api fails closed at
+      # startup rather than serving relationship routes with no graph behind them.
+      THOR_NEPTUNE_ENDPOINT  = var.enable_neptune ? module.neptune[0].endpoint : ""
+      THOR_NEPTUNE_PORT      = "8182"
+      THOR_NEPTUNE_ENABLESSL = "true"
+      THOR_AWS_REGION        = var.aws_region
+
+      # @connections base URL for streaming agent responses (PostToConnection), reached over the NAT.
+      THOR_WEBSOCKET_MANAGEMENT_ENDPOINT = var.enable_compute ? module.api_gateway_ws[0].management_endpoint : ""
     })
     task-api = tomap({
       THOR_UPLOADS_BUCKET = module.uploads.bucket_name
@@ -145,10 +156,15 @@ module "ecs" {
   master_db_app_user     = var.master_db_app_user
   db_access_service_keys = ["thor-api", "task-api", "intelligence-engine"]
 
+  # thor-api's read-only neptune-db grant (modules/ecs/iam.tf task_neptune_read).
+  neptune_cluster_resource_id = var.enable_neptune ? module.neptune[0].cluster_resource_id : ""
+
   # Runtime grants for the config above: GetSecretValue on whatever each service's `secrets` map
   # resolves, and S3 writes for the presigned uploads task-api issues.
   execution_secret_arns = local.service_secret_arns
   uploads_bucket_arn    = module.uploads.bucket_arn
+
+  websocket_connections_arn = var.enable_compute ? module.api_gateway_ws[0].connections_arn : ""
 
   tags = var.tags
 }
@@ -298,6 +314,31 @@ module "api_gateway" {
   cdn_price_class     = var.api_cdn_price_class
   cdn_waf_rate_limit  = var.api_cdn_waf_rate_limit
 
+  # Served on the same distribution at /ws.
+  websocket_api_id     = module.api_gateway_ws[0].api_id
+  websocket_stage_name = module.api_gateway_ws[0].stage_name
+
+  tags = var.tags
+}
+
+# WebSocket API for streamed agent responses — same enable_compute gate and NLB as module.api_gateway.
+module "api_gateway_ws" {
+  count = var.enable_compute ? 1 : 0
+
+  source = "./modules/api_gateway_ws"
+
+  environment       = var.environment
+  service_name      = local.public_service_name
+  nlb_arn           = module.ecs.nlb_arns[local.public_service_name]
+  nlb_dns_name      = module.ecs.nlb_dns_names[local.public_service_name]
+  nlb_listener_port = var.services[local.public_service_name].nlb_listener_port
+
+  authorizer_lambda_invoke_arn    = module.lambda.lambda_invoke_arn
+  authorizer_lambda_function_name = module.lambda.lambda_function_name
+
+  # Must agree with the NLB's own TLS state, same as module.api_gateway.
+  tls_server_name = local.backend_route53 != null ? local.backend_route53.domain_name : ""
+
   tags = var.tags
 }
 
@@ -446,6 +487,7 @@ module "neptune" {
     var.enable_compute ? {
       intelligence-engine = module.ecs.service_security_group_ids["intelligence-engine"]
       task-api            = module.ecs.service_security_group_ids["task-api"]
+      thor-api            = module.ecs.service_security_group_ids["thor-api"]
     } : {},
     { for name, id in module.workflow_network.security_group_ids : "workflow-${name}" => id }
   )

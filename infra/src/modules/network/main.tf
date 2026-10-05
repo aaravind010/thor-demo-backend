@@ -70,7 +70,7 @@ resource "aws_subnet" "private" {
   }
 }
 
-# No NAT Gateway route here by design — private subnets reach AWS services only through the VPC endpoints below.
+# AWS services are reached through the VPC endpoints below; nat.tf adds a 0.0.0.0/0 NAT route here when nat_gateway_mode = "single".
 resource "aws_route_table" "private" {
   vpc_id = aws_vpc.thor-vpc.id
 

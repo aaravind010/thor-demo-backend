@@ -189,6 +189,10 @@ mismatch fails closed and emits a security event (§10).
 - **Amazon Neptune** is the graph store, deployed as a **single regional,
   multi-AZ, tenant-partitioned** cluster following the
   [Neptune multi-tenant partition strategy](https://aws.amazon.com/blogs/database/build-multi-tenant-architectures-on-amazon-neptune/).
+  Only the workflows write the graph. Thor.Api reads it, read-only (`neptune-db:ReadDataViaQuery`),
+  through `Thor.Graph.IGraphRelationshipReader` for the `/accounts/{id}` and `/groups/{id}`
+  relationship routes. Reads are sent as bytecode, because Neptune does not support script bindings.
+  Every hop is filtered by `tenantId` as well as starting from a tenant-namespaced vertex id.
 - Aurora and Neptune are each **one cluster with instances spread across AZs**,
   **not** per-AZ deployments.
   > **Reading the diagram:** `thor_architecture.png` draws Aurora and Neptune in

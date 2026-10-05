@@ -13,6 +13,24 @@ locals {
   # Built from the api id, not parsed from invoke_url — that URL bundles a scheme and
   # stage path that this origin sets as separate args.
   cdn_origin_domain_name = "${aws_apigatewayv2_api.thor-apigw-api.id}.execute-api.${data.aws_region.current.region}.amazonaws.com"
+
+  cdn_ws_origin_id = "apigw-ws"
+}
+
+# A WebSocket API's endpoint is the bare stage path, and it has no path routing, so wss://<host>/ws
+# can't reach it through an origin_path the way the HTTP API does (that would give /<stage>/ws).
+# This rewrites the handshake's path to /<stage> instead; the ?token= query string is untouched.
+resource "aws_cloudfront_function" "ws_rewrite" {
+  name    = "${local.cdn_name_prefix}-ws-rewrite"
+  comment = "Rewrites /ws to the WebSocket API stage path"
+  runtime = "cloudfront-js-2.0"
+  publish = true
+  code    = <<-EOT
+    function handler(event) {
+      event.request.uri = "/${var.websocket_stage_name}";
+      return event.request;
+    }
+  EOT
 }
 
 # Looked up by name, not hard-coded UUID — self-documenting, and a typo fails at plan time
@@ -43,6 +61,36 @@ resource "aws_cloudfront_distribution" "api" {
       https_port             = 443
       origin_protocol_policy = "https-only"
       origin_ssl_protocols   = ["TLSv1.2"]
+    }
+  }
+
+  # No origin_path — ws_rewrite sets the whole path.
+  origin {
+    domain_name = "${var.websocket_api_id}.execute-api.${data.aws_region.current.region}.amazonaws.com"
+    origin_id   = local.cdn_ws_origin_id
+
+    custom_origin_config {
+      http_port              = 80
+      https_port             = 443
+      origin_protocol_policy = "https-only"
+      origin_ssl_protocols   = ["TLSv1.2"]
+    }
+  }
+
+  # The WebSocket handshake is a GET carrying the Sec-WebSocket-* headers and ?token=, all forwarded
+  # by the same origin request policy as the default behaviour (Host excluded, as execute-api needs).
+  ordered_cache_behavior {
+    path_pattern             = "/ws"
+    target_origin_id         = local.cdn_ws_origin_id
+    viewer_protocol_policy   = "https-only"
+    allowed_methods          = ["GET", "HEAD"]
+    cached_methods           = ["GET", "HEAD"]
+    cache_policy_id          = data.aws_cloudfront_cache_policy.caching_disabled.id
+    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer_except_host.id
+
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.ws_rewrite.arn
     }
   }
 

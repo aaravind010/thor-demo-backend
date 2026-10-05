@@ -1,4 +1,5 @@
-# NAT Gateway egress for the private subnets — lets ECS services ship logs to an external vendor.
+# NAT Gateway egress for the private subnets — lets ECS services ship logs to an external vendor, and
+# lets Thor.Api call the WebSocket API's @connections endpoint, which no execute-api VPC endpoint can carry.
 # "single": one NAT, routed from the existing shared private route table (existing associations untouched).
 # "per_az": one NAT per AZ, each private subnet moved onto its own AZ's route table.
 # "none":   nothing here is created.

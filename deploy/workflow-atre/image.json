@@ -1,8 +1,8 @@
 {
   "service": "workflow-atre",
   "dev": {
-    "digest": "sphereco.jfrog.io/thor-docker-local/workflow-atre@sha256:5890f6f2518d6d0a6aa012891b41659f861472f4cc26d2899b443c8da7182c1c",
-    "commitId": "5f86653ca7f3fc6b62b2afdc1152402f133df9de",
-    "deployedAt": "2026-09-30T09:21:13Z"
+    "digest": "sphereco.jfrog.io/thor-docker-local/workflow-atre@sha256:1028fc5c9d457266f9ab8c69d468404a5e095263560b5fb356a40e9d1d1cf249",
+    "commitId": "8fdb120a6880047c2fc7b41154a3fc5b8ccbb096",
+    "deployedAt": "2026-10-01T08:59:04Z"
   }
 }
