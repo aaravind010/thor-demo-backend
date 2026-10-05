@@ -20,6 +20,17 @@ inputs = {
   public_subnet_cidrs  = ["10.0.0.0/24", "10.0.1.0/24"]
   nat_gateway_mode     = "single" # dev target: "single"
 
+  # --- DNS Firewall default deny (active only while nat_gateway_mode != "none") ---
+  # Package registries are always blocked; AWS, VPC-internal and egress_allowed_domains names always resolve.
+  # dns_firewall_default_action decides what happens to every other name:
+  #   "ALERT" - the name still resolves and is logged as would-be-blocked. Nothing breaks. Use this first, and as the rollback.
+  #   "BLOCK" - the name gets NXDOMAIN, so nothing can connect to it. Switch to this once the query logs
+  #             (/aws/route53resolver/thor-dev) show ~7 days of normal traffic with no unexpected ALERT names
+  #             and none from workflow or Lambda IPs.
+  # egress_allowed_domains: tenant log vendor domains - "*.acme-logs.io" (all subdomains) or "ingest.acme-logs.io" (exact name).
+  dns_firewall_default_action = "ALERT"
+  egress_allowed_domains      = []
+
   # --- ecs compute ---
   # false until a real image has been pushed to each ECR repo below — the cluster/namespace/repos are created regardless.
   enable_compute            = true

@@ -57,6 +57,18 @@ variable "public_subnet_cidrs" {
   default     = []
 }
 
+variable "egress_allowed_domains" {
+  type        = list(string)
+  description = "Extra hostnames the VPC may resolve beyond AWS/VPC-internal names (tenant log vendors) while NAT egress is on"
+  default     = []
+}
+
+variable "dns_firewall_default_action" {
+  type        = string
+  description = "DNS Firewall action for names not on the allowlist: ALERT (log only) or BLOCK (NXDOMAIN)"
+  default     = "ALERT"
+}
+
 # --- compute (shared ECS cluster running thor, task-api, intelligence-engine) ---
 
 variable "enable_compute" {

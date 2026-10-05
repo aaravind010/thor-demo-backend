@@ -33,6 +33,10 @@ module "network" {
   nat_gateway_mode     = var.nat_gateway_mode
   public_subnet_cidrs  = var.public_subnet_cidrs
   tags                 = var.tags
+
+  # DNS Firewall default deny (only while NAT egress is on)
+  egress_allowed_domains      = var.egress_allowed_domains
+  dns_firewall_default_action = var.dns_firewall_default_action
 }
 
 locals {

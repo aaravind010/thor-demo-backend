@@ -42,6 +42,28 @@ variable "public_subnet_cidrs" {
   default     = []
 }
 
+variable "egress_allowed_domains" {
+  type        = list(string)
+  description = "Extra hostnames the VPC may resolve beyond AWS/VPC-internal names (tenant log vendors), DNS Firewall syntax: \"example.com\" and/or \"*.example.com\". Unused when nat_gateway_mode = none"
+  default     = []
+
+  validation {
+    condition     = !contains(var.egress_allowed_domains, "*")
+    error_message = "egress_allowed_domains must not contain \"*\" — that would allow every name and cancel the default deny."
+  }
+}
+
+variable "dns_firewall_default_action" {
+  type        = string
+  description = "DNS Firewall action for names not on the allowlist: ALERT (resolve, but log as would-be-blocked) or BLOCK (NXDOMAIN). Start with ALERT; switch to BLOCK once the query logs show no unexpected names"
+  default     = "ALERT"
+
+  validation {
+    condition     = contains(["ALERT", "BLOCK"], var.dns_firewall_default_action)
+    error_message = "dns_firewall_default_action must be one of: ALERT, BLOCK."
+  }
+}
+
 variable "tags" {
   type        = map(string)
   description = "Additional resource-specific tags (Project/Environment/ManagedBy are already applied via provider default_tags)"
