@@ -102,6 +102,18 @@ variable "uploads_bucket_arn" {
   description = "ARN of the tenant uploads bucket task-api presigns against. Required — the uploads module is always instantiated, so there is no no-bucket case to guard for."
 }
 
+variable "tenant_vendors_allowlist_enabled" {
+  type        = bool
+  description = "Whether the DNS Firewall tenant-vendors domain list exists (NAT egress on). Gates thor-api's grant on it — a plain bool because the list's ARN isn't known until apply, and a for_each can't key off an unknown value."
+  default     = false
+}
+
+variable "tenant_vendors_domain_list_arn" {
+  type        = string
+  description = "ARN of the DNS Firewall tenant-vendors domain list thor-api keeps in sync with tenant log sink endpoints. Used only when tenant_vendors_allowlist_enabled."
+  default     = ""
+}
+
 variable "cross_account_pull_principal_arns" {
   type        = list(string)
   description = "IAM role ARNs (e.g. a downstream environment's deploy role, possibly in another AWS account) allowed to pull images from this environment's ECR repos. Empty by default — fill in once the downstream role actually exists (e.g. qa's terragrunt.hcl sets this to prod's deploy role ARN once the prod account/role are real)."

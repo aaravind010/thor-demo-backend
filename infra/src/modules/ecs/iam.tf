@@ -159,6 +159,28 @@ resource "aws_iam_role_policy" "task_tenant_secrets" {
   })
 }
 
+# thor-api keeps the tenant log-vendor allowlist in sync with the Master DB: when a tenant's log sink endpoint is
+# added or changed, it updates the DNS Firewall's tenant-vendors domain list. Scoped to that one list — thor-api
+# cannot touch the Terraform-managed allowlist, the package-registry block list, or any rule.
+resource "aws_iam_role_policy" "task_egress_allowlist" {
+  for_each = toset(contains(keys(local.active_services), "thor-api") && var.tenant_vendors_allowlist_enabled ? ["thor-api"] : [])
+
+  name = "dns-firewall-tenant-vendors"
+  role = aws_iam_role.task[each.key].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "route53resolver:UpdateFirewallDomains",
+        "route53resolver:GetFirewallDomainList",
+        "route53resolver:ListFirewallDomains",
+      ]
+      Resource = var.tenant_vendors_domain_list_arn
+    }]
+  })
+}
+
 # thor-api's IdentityProviderService lets a tenant admin manage SAML/OIDC IdPs on that tenant's own
 # user pool and enable them on its app client. Pools are created at runtime by tenant provisioning
 # and their ARNs carry the pool id, not a name, so this can't be narrowed per tenant here — the
