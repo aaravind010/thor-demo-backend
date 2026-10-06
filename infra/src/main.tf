@@ -82,6 +82,9 @@ locals {
       # neither the Service Connect alias nor any trusted chain — the same tradeoff Thor.Api's gRPC
       # client already makes for intelligence-engine, and the NLB->ECS leg is VPC-internal.
       "ReverseProxy__Clusters__task-api-cluster__HttpClient__DangerousAcceptAnyServerCertificate" = "true"
+
+      # DNS Firewall list thor-api keeps in sync with tenant log sink endpoints ("" when NAT egress is off).
+      THOR_TENANT_VENDORS_DOMAIN_LIST_ID = module.network.tenant_vendors_domain_list_id
     })
     task-api = tomap({
       THOR_UPLOADS_BUCKET = module.uploads.bucket_name
@@ -149,6 +152,10 @@ module "ecs" {
   # resolves, and S3 writes for the presigned uploads task-api issues.
   execution_secret_arns = local.service_secret_arns
   uploads_bucket_arn    = module.uploads.bucket_arn
+
+  # thor-api's grant on the DNS Firewall tenant-vendors list, which only exists while NAT egress is on.
+  tenant_vendors_allowlist_enabled = var.nat_gateway_mode != "none"
+  tenant_vendors_domain_list_arn   = module.network.tenant_vendors_domain_list_arn
 
   tags = var.tags
 }

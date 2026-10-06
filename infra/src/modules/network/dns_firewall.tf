@@ -99,6 +99,33 @@ resource "aws_route53_resolver_firewall_rule" "allow_listed" {
   firewall_domain_redirection_action = "TRUST_REDIRECTION_DOMAIN"
 }
 
+# Tenant log-vendor hostnames, kept in sync with auth.tenant_log_sink_config at runtime (UpdateFirewallDomains).
+# Terraform creates the list and never touches its contents.
+resource "aws_route53_resolver_firewall_domain_list" "tenant_vendors" {
+  count   = local.nat_enabled ? 1 : 0
+  name    = "${local.name_prefix}-dns-tenant-vendors"
+  domains = ["placeholder.invalid"] # a domain list can't be emptied by REPLACE; ".invalid" never resolves
+
+  tags = var.tags
+
+  # Domains are owned at runtime, not here. Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [domains, tags, tags_all]
+  }
+}
+
+resource "aws_route53_resolver_firewall_rule" "allow_tenant_vendors" {
+  count                   = local.nat_enabled ? 1 : 0
+  name                    = "allow-tenant-vendors"
+  action                  = "ALLOW"
+  priority                = 210
+  firewall_domain_list_id = aws_route53_resolver_firewall_domain_list.tenant_vendors[0].id
+  firewall_rule_group_id  = aws_route53_resolver_firewall_rule_group.egress[0].id
+
+  # Same as allow-listed: trust the CNAME chain behind a vendor hostname (CDNs). Registries are still caught at 100.
+  firewall_domain_redirection_action = "TRUST_REDIRECTION_DOMAIN"
+}
+
 resource "aws_route53_resolver_firewall_rule" "default_deny" {
   count                   = local.nat_enabled ? 1 : 0
   name                    = "default-deny"
