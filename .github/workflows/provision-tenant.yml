@@ -177,7 +177,9 @@ jobs:
           echo "- Tenant: ${DISPLAY_NAME} (\`${SUBDOMAIN}\`)"
           echo "- Environment: ${ENVIRONMENT}"
           echo "- Admin: ${ADMIN_EMAIL}"
-          echo "- Execution: \`${EXECUTION_ARN}\`"
+          # arn:aws:states:<region>:<account>:execution:<state-machine>:<name>
+          REGION=$(echo "$EXECUTION_ARN" | cut -d: -f4)
+          echo "- Execution: https://${REGION}.console.aws.amazon.com/states/home?region=${REGION}#/v2/executions/details/${EXECUTION_ARN}"
           echo
 
           if [ -z "$STATUS" ]; then
