@@ -76,6 +76,14 @@ locals {
       # neither the Service Connect alias nor any trusted chain — the same tradeoff Thor.Api's gRPC
       # client already makes for intelligence-engine, and the NLB->ECS leg is VPC-internal.
       "ReverseProxy__Clusters__task-api-cluster__HttpClient__DangerousAcceptAnyServerCertificate" = "true"
+
+      # Read-only graph reads (GraphRelationshipReader), same settings the workflows use. Program.cs
+      # requires all four; with enable_neptune off the endpoint is empty, so thor-api fails closed at
+      # startup rather than serving relationship routes with no graph behind them.
+      THOR_NEPTUNE_ENDPOINT  = var.enable_neptune ? module.neptune[0].endpoint : ""
+      THOR_NEPTUNE_PORT      = "8182"
+      THOR_NEPTUNE_ENABLESSL = "true"
+      THOR_AWS_REGION        = var.aws_region
     })
     task-api = tomap({
       THOR_UPLOADS_BUCKET = module.uploads.bucket_name
@@ -138,6 +146,9 @@ module "ecs" {
   rds_proxy_resource_id  = module.rds_proxy.proxy_resource_id
   master_db_app_user     = var.master_db_app_user
   db_access_service_keys = ["thor-api", "task-api", "intelligence-engine"]
+
+  # thor-api's read-only neptune-db grant (modules/ecs/iam.tf task_neptune_read).
+  neptune_cluster_resource_id = var.enable_neptune ? module.neptune[0].cluster_resource_id : ""
 
   # Runtime grants for the config above: GetSecretValue on whatever each service's `secrets` map
   # resolves, and S3 writes for the presigned uploads task-api issues.
@@ -440,6 +451,7 @@ module "neptune" {
     var.enable_compute ? {
       intelligence-engine = module.ecs.service_security_group_ids["intelligence-engine"]
       task-api            = module.ecs.service_security_group_ids["task-api"]
+      thor-api            = module.ecs.service_security_group_ids["thor-api"]
     } : {},
     { for name, id in module.workflow_network.security_group_ids : "workflow-${name}" => id }
   )
@@ -485,10 +497,13 @@ module "tenant_provisioning" {
   aurora_database_name       = module.aurora.database_name
   aurora_cluster_resource_id = module.aurora.cluster_resource_id
 
-  # Runtime routing endpoint written into each tenant row = the IAM RDS Proxy.
-  tenant_routing_endpoint = module.rds_proxy.endpoint
-  provisioning_db_user    = var.provisioning_db_user
-  metadata_writer_db_user = var.metadata_writer_db_user
+  # Runtime routing endpoint written into each tenant row = the IAM RDS Proxy. The account-type
+  # seeding step also reaches tenant DBs through it, hence the proxy id + security group.
+  tenant_routing_endpoint     = module.rds_proxy.endpoint
+  rds_proxy_resource_id       = module.rds_proxy.proxy_resource_id
+  rds_proxy_security_group_id = module.rds_proxy.rds_proxy_security_group_id
+  provisioning_db_user        = var.provisioning_db_user
+  metadata_writer_db_user     = var.metadata_writer_db_user
 
   source_dir                   = var.tenant_provisioning_source_dir
   iam_permissions_boundary_arn = local.iam_permissions_boundary_arn

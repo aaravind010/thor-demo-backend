@@ -5,7 +5,7 @@ using Thor.TenantProvisioning.Core.Steps;
 
 namespace Thor.TenantProvisioning.Function.Handlers;
 
-/// <summary>Step Functions task 4 — see <see cref="ConfigureSubdomainStep"/>.</summary>
+/// <summary>Step Functions Task 4 — see <see cref="ConfigureSubdomainStep"/>.</summary>
 public sealed class ConfigureSubdomainFunction
 {
     private readonly IServiceProvider _services;

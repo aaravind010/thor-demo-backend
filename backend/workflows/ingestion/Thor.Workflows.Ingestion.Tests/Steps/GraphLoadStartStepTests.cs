@@ -239,21 +239,37 @@ public sealed class GraphLoadStartStepTests : IAsyncLifetime
     private sealed class FakeBulkLoaderClient : INeptuneBulkLoaderClient
     {
         public List<Uri> StartedSources { get; } = [];
+        public List<IReadOnlyList<string>?> StartedDependencies { get; } = [];
         public string LoadIdToReturn { get; set; } = "fake-load-id";
 
-        public Task<BulkLoadStartResult> StartLoadAsync(Uri s3SourceUri, string iamRoleArn, string region, CancellationToken cancellationToken = default)
+        public Task<BulkLoadStartResult> StartLoadAsync(Uri s3SourceUri, string iamRoleArn, string region, IReadOnlyList<string>? dependsOnLoadIds = null, CancellationToken cancellationToken = default)
         {
             StartedSources.Add(s3SourceUri);
-            return Task.FromResult(new BulkLoadStartResult(LoadIdToReturn));
+            StartedDependencies.Add(dependsOnLoadIds);
+            return Task.FromResult(new BulkLoadStartResult(StartedSources.Count == 1 ? LoadIdToReturn : $"{LoadIdToReturn}-{StartedSources.Count}"));
         }
 
         public Task<BulkLoadStatusResult> GetLoadStatusAsync(string loadId, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException("GraphLoadStartStep never polls.");
     }
 
+    /// <summary>Reports every requested vertex as present unless a specific present-set is given.</summary>
+    private sealed class FakeExistenceReader(IEnumerable<GraphVertexRef>? existing = null) : IGraphVertexExistenceReader
+    {
+        public List<GraphVertexRef> Requested { get; } = [];
+
+        public Task<IReadOnlySet<GraphVertexRef>> GetExistingAsync(
+            Guid tenantId, IReadOnlyCollection<GraphVertexRef> vertices, CancellationToken cancellationToken = default)
+        {
+            Requested.AddRange(vertices);
+            IReadOnlySet<GraphVertexRef> present = existing is null ? vertices.ToHashSet() : existing.ToHashSet();
+            return Task.FromResult(present);
+        }
+    }
+
     private sealed class ThrowingBulkLoaderClient : INeptuneBulkLoaderClient
     {
-        public Task<BulkLoadStartResult> StartLoadAsync(Uri s3SourceUri, string iamRoleArn, string region, CancellationToken cancellationToken = default) =>
+        public Task<BulkLoadStartResult> StartLoadAsync(Uri s3SourceUri, string iamRoleArn, string region, IReadOnlyList<string>? dependsOnLoadIds = null, CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("simulated Neptune bulk-load-start failure");
 
         public Task<BulkLoadStatusResult> GetLoadStatusAsync(string loadId, CancellationToken cancellationToken = default) =>
@@ -263,7 +279,7 @@ public sealed class GraphLoadStartStepTests : IAsyncLifetime
     /// <summary>Stands in for GraphLoadPollStep's Neptune dependency in tests that only exercise the deferred-delete path, not the poll loop itself.</summary>
     private sealed class CompletedBulkLoaderClient : INeptuneBulkLoaderClient
     {
-        public Task<BulkLoadStartResult> StartLoadAsync(Uri s3SourceUri, string iamRoleArn, string region, CancellationToken cancellationToken = default) =>
+        public Task<BulkLoadStartResult> StartLoadAsync(Uri s3SourceUri, string iamRoleArn, string region, IReadOnlyList<string>? dependsOnLoadIds = null, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException("GraphLoadPollStep never starts a load.");
 
         public Task<BulkLoadStatusResult> GetLoadStatusAsync(string loadId, CancellationToken cancellationToken = default) =>
@@ -279,9 +295,10 @@ public sealed class GraphLoadStartStepTests : IAsyncLifetime
     }
 
     private GraphLoadStartStep BuildStep(
-        FakeGraphVertexStore vertexStore, FakeS3ObjectStore s3, INeptuneBulkLoaderClient bulkLoader, TimeSpan? startStaleThreshold = null) =>
+        FakeGraphVertexStore vertexStore, FakeS3ObjectStore s3, INeptuneBulkLoaderClient bulkLoader, TimeSpan? startStaleThreshold = null,
+        IGraphVertexExistenceReader? existenceReader = null) =>
         new(NullLoggerFactory.Instance, new FakeTenantConnectionManager(_ => _context), vertexStore, new FakeGraphEdgeStore(),
-            s3, bulkLoader, "test-bucket", "arn:aws:iam::123:role/neptune-load", "us-east-1", startStaleThreshold ?? TimeSpan.FromMinutes(10));
+            existenceReader ?? new FakeExistenceReader(), s3, bulkLoader, "test-bucket", "arn:aws:iam::123:role/neptune-load", "us-east-1", startStaleThreshold ?? TimeSpan.FromMinutes(10));
 
     [Fact]
     public async Task RunAsync_ChangedAccountNotDeleted_UploadsCsvAndStartsBulkLoad()
@@ -676,9 +693,85 @@ public sealed class GraphLoadStartStepTests : IAsyncLifetime
         var result = await retryAttempt.RunAsync(_context, tenantId, _scanId, scanManifestId);
 
         Assert.Equal(1, result.EdgesQueuedForLoad);
-        Assert.Single(workingLoader.StartedSources);
+        Assert.Equal(2, workingLoader.StartedSources.Count);
         Assert.Contains(s3.PutObjects, p => p.Key.EndsWith("/edges/edges.csv"));
         // The failed first-attempt row and the retry's new row now both exist for this scan.
         Assert.Equal("started", (await _context.GraphBulkLoadJobs.SingleAsync(j => j.ScanId == _scanId && j.Status != "failed")).Status);
+    }
+
+    [Fact]
+    public async Task RunAsync_EdgeEndpointMissingFromNeptune_BackfillsVertexAndQueuesEdgeLoadBehindVertexLoad()
+    {
+        var otherManifestId = await SeedScanManifestAsync();
+        var scanManifestId = await SeedScanManifestAsync();
+        var tenantId = Guid.NewGuid();
+        var groupId = await InsertGroupAsync(otherManifestId, "orphan-team", isDeleted: false, aliasKey: "cn=orphan-team,dc=test");
+        await InsertAccountAsync(scanManifestId, "heidi", isDeleted: false, aliasKey: "cn=heidi,dc=test",
+            edgeRefs: [("MEMBER_OF", "out", "cn=orphan-team,dc=test", "grp")]);
+
+        var s3 = new FakeS3ObjectStore();
+        var bulkLoader = new FakeBulkLoaderClient();
+        var reader = new FakeExistenceReader(existing: []);
+        var step = BuildStep(new FakeGraphVertexStore(), s3, bulkLoader, existenceReader: reader);
+
+        var result = await step.RunAsync(_context, tenantId, _scanId, scanManifestId);
+
+        Assert.Contains(new GraphVertexRef("grp", groupId), reader.Requested);
+        Assert.Equal(2, result.VerticesQueuedForLoad);
+        Assert.Equal(1, result.EdgesQueuedForLoad);
+        Assert.Contains(s3.PutObjects, p => p.Key.EndsWith("/vertices/groups.csv") && p.Content.Contains("orphan-team"));
+
+        Assert.Equal(2, bulkLoader.StartedSources.Count);
+        Assert.EndsWith("/vertices/", bulkLoader.StartedSources[0].ToString());
+        Assert.EndsWith("/edges/", bulkLoader.StartedSources[1].ToString());
+        Assert.Null(bulkLoader.StartedDependencies[0]);
+        Assert.Equal(["fake-load-id"], bulkLoader.StartedDependencies[1]);
+
+        var job = await _context.GraphBulkLoadJobs.SingleAsync(j => j.ScanId == _scanId && j.ScanManifestId == scanManifestId);
+        Assert.Equal("fake-load-id", job.PrimaryLoadId);
+        Assert.Equal("fake-load-id-2", job.EdgeLoadId);
+    }
+
+    [Fact]
+    public async Task RunAsync_EdgeEndpointAlreadyInNeptune_DoesNotBackfillVertex()
+    {
+        var otherManifestId = await SeedScanManifestAsync();
+        var scanManifestId = await SeedScanManifestAsync();
+        var tenantId = Guid.NewGuid();
+        var groupId = await InsertGroupAsync(otherManifestId, "present-team", isDeleted: false, aliasKey: "cn=present-team,dc=test");
+        await InsertAccountAsync(scanManifestId, "ivan", isDeleted: false, aliasKey: "cn=ivan,dc=test",
+            edgeRefs: [("MEMBER_OF", "out", "cn=present-team,dc=test", "grp")]);
+
+        var s3 = new FakeS3ObjectStore();
+        var step = BuildStep(
+            new FakeGraphVertexStore(), s3, new FakeBulkLoaderClient(),
+            existenceReader: new FakeExistenceReader(existing: [new GraphVertexRef("grp", groupId)]));
+
+        var result = await step.RunAsync(_context, tenantId, _scanId, scanManifestId);
+
+        Assert.Equal(1, result.VerticesQueuedForLoad);
+        Assert.Equal(1, result.EdgesQueuedForLoad);
+        Assert.DoesNotContain(s3.PutObjects, p => p.Key.EndsWith("/vertices/groups.csv"));
+    }
+
+    [Fact]
+    public async Task RunAsync_EdgeEndpointMissingFromNeptuneAndSoftDeleted_DropsTheEdge()
+    {
+        var otherManifestId = await SeedScanManifestAsync();
+        var scanManifestId = await SeedScanManifestAsync();
+        var tenantId = Guid.NewGuid();
+        await InsertGroupAsync(otherManifestId, "gone-team", isDeleted: true, aliasKey: "cn=gone-team,dc=test");
+        await InsertAccountAsync(scanManifestId, "judy", isDeleted: false, aliasKey: "cn=judy,dc=test",
+            edgeRefs: [("MEMBER_OF", "out", "cn=gone-team,dc=test", "grp")]);
+
+        var s3 = new FakeS3ObjectStore();
+        var step = BuildStep(
+            new FakeGraphVertexStore(), s3, new FakeBulkLoaderClient(), existenceReader: new FakeExistenceReader(existing: []));
+
+        var result = await step.RunAsync(_context, tenantId, _scanId, scanManifestId);
+
+        Assert.Equal(0, result.EdgesQueuedForLoad);
+        Assert.DoesNotContain(s3.PutObjects, p => p.Key.EndsWith("/edges/edges.csv"));
+        Assert.DoesNotContain(s3.PutObjects, p => p.Key.EndsWith("/vertices/groups.csv"));
     }
 }

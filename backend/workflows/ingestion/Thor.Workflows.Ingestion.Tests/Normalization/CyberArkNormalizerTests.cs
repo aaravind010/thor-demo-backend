@@ -316,4 +316,88 @@ public class CyberArkNormalizerTests
 
         Assert.Empty(batch.Entitlements);
     }
+
+    private static List<IngestBatch> NormalizeBatches(string json) =>
+        new CyberArkNormalizer(NullLogger<CyberArkNormalizer>.Instance, new AttributeMapProvider(), TestConnectorTypes.Catalog)
+            .NormalizeBatches(() => new MemoryStream(Encoding.UTF8.GetBytes(json)), Guid.NewGuid())
+            .ToList();
+
+    [Fact]
+    public void NormalizeBatches_ManyAccounts_YieldsBoundedChunksThenMembersLast()
+    {
+        var accounts = string.Join(",", Enumerable.Range(1, 12_000).Select(i => $$"""{"AccountId":"{{i}}","SafeName":"S"}"""));
+        var json = $$"""
+            {
+              "Safes": [ {"SafeNumber":1,"SafeName":"S"} ],
+              "Accounts": { "AccountDetails": [ {{accounts}} ] },
+              "Members": [ {"SafeNumber":1,"MemberId":"1","MemberName":"m","MemberType":"User"} ]
+            }
+            """;
+
+        var batches = NormalizeBatches(json);
+
+        Assert.Equal(4, batches.Count);
+        Assert.Single(batches[0].Assets);
+        Assert.Empty(batches[0].Accounts);
+        Assert.Equal(5000, batches[1].Accounts.Count);
+        Assert.Equal(5000, batches[2].Accounts.Count);
+        Assert.Equal(2001, batches[3].Accounts.Count);
+        Assert.Contains(batches[3].Accounts, a => a.NativeId == "m");
+        Assert.Equal(12_001, batches.Sum(b => b.Accounts.Count));
+    }
+
+    [Fact]
+    public void NormalizeBatches_MemberAcrossManySafes_ConsolidatesIntoOneEntityInTheLastBatch()
+    {
+        var json = """
+            {
+              "Safes": [ {"SafeNumber":1,"SafeName":"A"}, {"SafeNumber":2,"SafeName":"B"} ],
+              "Accounts": { "AccountDetails": [ {"AccountId":"1","SafeName":"A"} ] },
+              "Members": [
+                {"SafeNumber":1,"MemberName":"m","MemberType":"User"},
+                {"SafeNumber":2,"MemberName":"m","MemberType":"User"}
+              ]
+            }
+            """;
+
+        var batches = NormalizeBatches(json);
+
+        var member = Assert.Single(batches[^1].Accounts, a => a.NativeId == "m");
+        Assert.Equal(2, ((RawAttributesWithEdges)member.RawAttributes).EdgeRefs.Count);
+        Assert.DoesNotContain(batches[..^1], b => b.Accounts.Any(a => a.NativeId == "m"));
+    }
+
+    [Fact]
+    public void Normalize_BadAccountRecord_IsSkippedAndCounted()
+    {
+        var json = """
+            {
+              "Safes": [], "Members": [],
+              "Accounts": { "AccountDetails": [ {"AccountId":"1"}, {"AccountId":undefined}, {"AccountId":"3"} ] }
+            }
+            """;
+
+        var batch = Normalize(json);
+
+        Assert.Equal(["1", "3"], batch.Accounts.Select(a => a.NativeId));
+        Assert.Equal(1, batch.SkippedCount);
+    }
+
+    [Fact]
+    public void Normalize_TruncatedExport_KeepsWhatWasReadAndCountsOneRepair()
+    {
+        var json = """{"Safes":[{"SafeNumber":1,"SafeName":"S"}],"Accounts":{"AccountDetails":[{"AccountId":"1"},{"AccountId":"2","Safe""";
+
+        var batch = Normalize(json);
+
+        Assert.Single(batch.Assets);
+        Assert.Equal(["1", "2"], batch.Accounts.Select(a => a.NativeId));
+        Assert.Equal(1, batch.RepairedCount);
+    }
+
+    [Fact]
+    public void Normalize_ExportWithNoExpectedSections_Throws()
+    {
+        Assert.Throws<InvalidOperationException>(() => Normalize("""{"Safes":undefined}"""));
+    }
 }

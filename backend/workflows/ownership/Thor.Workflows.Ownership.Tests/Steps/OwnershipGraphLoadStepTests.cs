@@ -139,6 +139,18 @@ public sealed class OwnershipGraphLoadStepTests(TenantDatabaseFixture db) : ICla
     }
 
     [Fact]
+    public async Task Poll_RetriedAfterAFailedLoad_ThrowsAgain_InsteadOfReportingNothingToPoll()
+    {
+        var (runId, _, _) = await SeedWinnerAsync("gl-retry-failed");
+        var request = new OwnershipRequest(Guid.NewGuid(), RunId: runId);
+        var loader = new FakeBulkLoaderClient(BulkLoadStatus.Completed) { InsertErrors = 2 };
+        await Start(new FakeS3ObjectStore(), loader).RunAsync(db.NewContext(), request);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Poll(loader).RunAsync(db.NewContext(), request));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Poll(loader).RunAsync(db.NewContext(), request));
+    }
+
+    [Fact]
     public async Task IngestionsPendingJob_ForTheSameManifest_IsNeverMistakenForOwnerships()
     {
         var manifestId = await db.SeedManifestAsync();

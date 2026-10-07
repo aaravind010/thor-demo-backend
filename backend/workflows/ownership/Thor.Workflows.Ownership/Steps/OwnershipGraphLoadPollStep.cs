@@ -73,10 +73,16 @@ public sealed class OwnershipGraphLoadPollStep : WorkflowStep<OwnershipRequest>
         var runId = OwnershipRunIdentity.Derive(request.TenantId, request.ScanManifestId, request.RunId, logger);
 
         var job = await db.GraphBulkLoadJobs
-            .Where(j => j.ScanId == runId && j.ScanManifestId == runId && j.Status == "started")
+            .Where(j => j.ScanId == runId && j.ScanManifestId == runId)
             .OrderByDescending(j => j.StartedAt)
             .FirstOrDefaultAsync(cancellationToken);
-        if (job is null)
+        if (job is { Status: "failed" })
+        {
+            // A retried poll must not mistake an already-failed load for "nothing to load".
+            throw new InvalidOperationException($"Neptune bulk load job {job.Id} failed: {job.ErrorSummary}");
+        }
+
+        if (job is not { Status: "started" })
         {
             // graph-load-start found nothing to load.
             logger.LogInformation("No pending bulk load for Ownership run {RunId} — nothing to poll.", runId);
@@ -101,7 +107,7 @@ public sealed class OwnershipGraphLoadPollStep : WorkflowStep<OwnershipRequest>
         if (status.Status == BulkLoadStatus.Failed || status.HasRowErrors)
         {
             var summary = status.HasRowErrors
-                ? $"Completed with row errors: {status.ParsingErrors} parsing, {status.DatatypeMismatchErrors} datatype, {status.InsertErrors} insert."
+                ? $"Completed with row errors: {status.ParsingErrors} parsing, {status.DatatypeMismatchErrors} datatype, {status.InsertErrors} insert. Sample errors: {string.Join("; ", status.ErrorMessages.Take(5))}"
                 : $"Status {status.RawStatus}: {string.Join("; ", status.ErrorMessages)}";
             job.Status = "failed";
             job.CompletedAt = DateTimeOffset.UtcNow;

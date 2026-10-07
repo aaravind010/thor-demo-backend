@@ -24,6 +24,8 @@ namespace Thor.Workflows.Ingestion.EdgeGate;
 /// </summary>
 internal static class SqlExec
 {
+    private const int CommandTimeoutSeconds = 300;
+
     public static (NpgsqlConnection Connection, NpgsqlTransaction? Transaction) Conn(TenantDbContext db) =>
         ((NpgsqlConnection)db.Database.GetDbConnection(), (NpgsqlTransaction?)db.Database.CurrentTransaction?.GetDbTransaction());
 
@@ -33,7 +35,7 @@ internal static class SqlExec
         try
         {
             var (connection, transaction) = Conn(db);
-            await using var command = new NpgsqlCommand(sql, connection, transaction);
+            await using var command = new NpgsqlCommand(sql, connection, transaction) { CommandTimeout = CommandTimeoutSeconds };
             command.Parameters.AddRange(parameters);
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
@@ -49,7 +51,7 @@ internal static class SqlExec
         try
         {
             var (connection, transaction) = Conn(db);
-            await using var command = new NpgsqlCommand(sql, connection, transaction);
+            await using var command = new NpgsqlCommand(sql, connection, transaction) { CommandTimeout = CommandTimeoutSeconds };
             command.Parameters.AddRange(parameters);
             return (long)(await command.ExecuteScalarAsync(cancellationToken) ?? 0L);
         }

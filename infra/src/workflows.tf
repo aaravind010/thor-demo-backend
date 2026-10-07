@@ -73,6 +73,7 @@ module "workflow" {
   chained_workflows      = local.workflow_definitions[each.key].chained_workflows
   base_policy_statements = local.workflow_compute_policy_statements
   # Null (no override in the definition) falls back to the module default.
+  task_cpu    = try(local.workflow_definitions[each.key].task_cpu, null)
   task_memory = try(local.workflow_definitions[each.key].task_memory, null)
 
   tags = var.tags

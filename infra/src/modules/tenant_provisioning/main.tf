@@ -21,24 +21,25 @@ locals {
 
   handler_ns = "Thor.TenantProvisioning.Function::Thor.TenantProvisioning.Function.Handlers"
 
-  # One published artifact, seven functions — each a distinct handler in the same assembly.
+  # One published artifact, eight functions — each a distinct handler in the same assembly.
   functions = {
-    seed-tenant-metadata   = { handler = "${local.handler_ns}.SeedTenantMetadataFunction::Handle" }
-    create-tenant-database = { handler = "${local.handler_ns}.CreateTenantDatabaseFunction::Handle" }
-    create-tenant-tables   = { handler = "${local.handler_ns}.CreateTenantTablesFunction::Handle" }
-    provision-cognito      = { handler = "${local.handler_ns}.ProvisionCognitoFunction::Handle" }
-    create-admin-user      = { handler = "${local.handler_ns}.CreateAdminUserFunction::Handle" }
-    configure-subdomain    = { handler = "${local.handler_ns}.ConfigureSubdomainFunction::Handle" }
-    finalize-routing       = { handler = "${local.handler_ns}.FinalizeRoutingFunction::Handle" }
+    seed-tenant-metadata           = { handler = "${local.handler_ns}.SeedTenantMetadataFunction::Handle" }
+    create-tenant-database         = { handler = "${local.handler_ns}.CreateTenantDatabaseFunction::Handle" }
+    create-tenant-tables           = { handler = "${local.handler_ns}.CreateTenantTablesFunction::Handle" }
+    provision-cognito              = { handler = "${local.handler_ns}.ProvisionCognitoFunction::Handle" }
+    create-admin-user              = { handler = "${local.handler_ns}.CreateAdminUserFunction::Handle" }
+    configure-subdomain            = { handler = "${local.handler_ns}.ConfigureSubdomainFunction::Handle" }
+    finalize-routing               = { handler = "${local.handler_ns}.FinalizeRoutingFunction::Handle" }
+    seed-unclassified-account-type = { handler = "${local.handler_ns}.SeedUnclassifiedAccountTypeFunction::Handle" }
   }
 
   # Only the DB-touching steps run in-VPC (they reach Aurora over TCP). The Cognito/Route53
   # steps stay outside the VPC so they can reach those public/global AWS endpoints — this VPC
   # uses interface endpoints, not NAT, and Route53 has no PrivateLink endpoint.
-  db_function_keys = ["seed-tenant-metadata", "create-tenant-database", "create-tenant-tables", "finalize-routing"]
+  db_function_keys = ["seed-tenant-metadata", "create-tenant-database", "create-tenant-tables", "finalize-routing", "seed-unclassified-account-type"]
   db_functions     = toset(local.db_function_keys)
 
-  # All seven share one composition root, which reads every var at cold start — so every Lambda
+  # All eight share one composition root, which reads every var at cold start — so every Lambda
   # gets the full env map regardless of which single step it runs.
   common_env = {
     THOR_MASTERDB_HOST                        = var.aurora_writer_endpoint
@@ -62,9 +63,11 @@ locals {
   # scoped separately (aws_iam_role_policy.rds_connect_create_tables) since its role is
   # per-tenant (tenant_<id>_rw), not one of these static, environment-wide roles.
   db_function_dbuser = {
-    seed-tenant-metadata   = var.metadata_writer_db_user
-    create-tenant-database = var.provisioning_db_user
-    finalize-routing       = var.metadata_writer_db_user
+    seed-tenant-metadata           = var.metadata_writer_db_user
+    create-tenant-database         = var.provisioning_db_user
+    finalize-routing               = var.metadata_writer_db_user
+    # Reads tenant_routing from the Master DB (via the connection manager) before opening the tenant DB.
+    seed-unclassified-account-type = var.metadata_writer_db_user
   }
 
   # The ASL lives beside the publish dir (backend/functions/Thor.TenantProvisioning/).
@@ -101,10 +104,8 @@ resource "aws_security_group" "provisioning" {
 
   tags = merge(var.tags, { Name = "${local.name_prefix}-sg" })
 
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
   lifecycle {
     create_before_destroy = true
-    ignore_changes        = [tags, tags_all]
   }
 }
 
@@ -120,11 +121,20 @@ resource "aws_vpc_security_group_ingress_rule" "provisioning_to_aurora" {
   ip_protocol                  = "tcp"
 
   tags = merge(var.tags, { Name = "${local.name_prefix}-aurora-ingress" })
+}
 
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
-  lifecycle {
-    ignore_changes = [tags, tags_all]
-  }
+# The seed-unclassified-account-type Lambda reaches tenant DBs through the RDS Proxy (connection
+# manager), so the proxy needs ingress from this SG too. Rule lives here, not in the rds_proxy
+# module, to avoid a module dependency cycle (same reasoning as the aurora rule above).
+resource "aws_vpc_security_group_ingress_rule" "provisioning_to_rds_proxy" {
+  security_group_id            = var.rds_proxy_security_group_id
+  description                  = "PostgreSQL from tenant provisioning Lambdas"
+  referenced_security_group_id = aws_security_group.provisioning.id
+  from_port                    = 5432
+  to_port                      = 5432
+  ip_protocol                  = "tcp"
+
+  tags = merge(var.tags, { Name = "${local.name_prefix}-rds-proxy-ingress" })
 }
 
 # --- Lambda IAM: one role per function, least-privilege ---
@@ -145,11 +155,6 @@ resource "aws_iam_role" "fn" {
   assume_role_policy   = data.aws_iam_policy_document.lambda_assume.json
   permissions_boundary = var.iam_permissions_boundary_arn
   tags                 = var.tags
-
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
-  lifecycle {
-    ignore_changes = [tags, tags_all]
-  }
 }
 
 resource "aws_cloudwatch_log_group" "fn" {
@@ -158,11 +163,6 @@ resource "aws_cloudwatch_log_group" "fn" {
   name              = "/aws/lambda/${local.name_prefix}-${each.key}"
   retention_in_days = 30
   tags              = var.tags
-
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
-  lifecycle {
-    ignore_changes = [tags, tags_all]
-  }
 }
 
 # Base policy (all functions): write to own log group only — replaces AWSLambdaBasicExecutionRole.
@@ -232,6 +232,23 @@ resource "aws_iam_role_policy" "rds_connect_create_tables" {
       Effect   = "Allow"
       Action   = ["rds-db:connect"]
       Resource = "${local.rds_db_arn_prefix}/tenant_*_rw"
+    }]
+  })
+}
+
+# seed-unclassified-account-type opens the tenant DB through the connection manager, i.e. via the
+# RDS Proxy as the tenant's _rw role (routing's cluster_endpoint + db_user). rds-db:connect for the
+# proxy leg is authorized by proxy resource ID, not cluster ID. Its Master-DB routing lookup is the
+# metadata-writer grant in rds_connect above.
+resource "aws_iam_role_policy" "rds_connect_seed_account_type" {
+  name = "rds-connect-tenant-proxy"
+  role = aws_iam_role.fn["seed-unclassified-account-type"].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["rds-db:connect"]
+      Resource = "arn:aws:rds-db:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:dbuser:${var.rds_proxy_resource_id}/tenant_*_rw"
     }]
   })
 }
@@ -315,11 +332,6 @@ resource "aws_lambda_function" "fn" {
   depends_on = [aws_cloudwatch_log_group.fn, aws_iam_role_policy.logs]
 
   tags = var.tags
-
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
-  lifecycle {
-    ignore_changes = [tags, tags_all]
-  }
 }
 
 # --- Step Functions state machine ---
@@ -338,11 +350,6 @@ resource "aws_iam_role" "sfn" {
   assume_role_policy   = data.aws_iam_policy_document.sfn_assume.json
   permissions_boundary = var.iam_permissions_boundary_arn
   tags                 = var.tags
-
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
-  lifecycle {
-    ignore_changes = [tags, tags_all]
-  }
 }
 
 resource "aws_iam_role_policy" "sfn_invoke" {
@@ -363,21 +370,17 @@ resource "aws_sfn_state_machine" "provisioning" {
   role_arn = aws_iam_role.sfn.arn
 
   definition = templatefile(local.asl_path, {
-    SeedTenantMetadataFunctionArn   = aws_lambda_function.fn["seed-tenant-metadata"].arn
-    CreateTenantDatabaseFunctionArn = aws_lambda_function.fn["create-tenant-database"].arn
-    CreateTenantTablesFunctionArn   = aws_lambda_function.fn["create-tenant-tables"].arn
-    ProvisionCognitoFunctionArn     = aws_lambda_function.fn["provision-cognito"].arn
-    CreateAdminUserFunctionArn      = aws_lambda_function.fn["create-admin-user"].arn
-    ConfigureSubdomainFunctionArn   = aws_lambda_function.fn["configure-subdomain"].arn
-    FinalizeRoutingFunctionArn      = aws_lambda_function.fn["finalize-routing"].arn
+    SeedTenantMetadataFunctionArn          = aws_lambda_function.fn["seed-tenant-metadata"].arn
+    CreateTenantDatabaseFunctionArn        = aws_lambda_function.fn["create-tenant-database"].arn
+    CreateTenantTablesFunctionArn          = aws_lambda_function.fn["create-tenant-tables"].arn
+    ProvisionCognitoFunctionArn            = aws_lambda_function.fn["provision-cognito"].arn
+    CreateAdminUserFunctionArn             = aws_lambda_function.fn["create-admin-user"].arn
+    ConfigureSubdomainFunctionArn          = aws_lambda_function.fn["configure-subdomain"].arn
+    FinalizeRoutingFunctionArn             = aws_lambda_function.fn["finalize-routing"].arn
+    SeedUnclassifiedAccountTypeFunctionArn = aws_lambda_function.fn["seed-unclassified-account-type"].arn
   })
 
   tags = var.tags
-
-  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
-  lifecycle {
-    ignore_changes = [tags, tags_all]
-  }
 }
 
 # The workflow is request-driven and terminates in a Fail state on error (the tenant stays

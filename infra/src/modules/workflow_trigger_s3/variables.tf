@@ -159,6 +159,12 @@ variable "pipe_batch_size" {
   default     = 10
 }
 
+variable "pipe_maximum_batching_window_seconds" {
+  description = "Longest the Pipe waits to fill pipe_batch_size before delivering a partial batch."
+  type        = number
+  default     = 60
+}
+
 variable "log_retention_days" {
   description = "CloudWatch log retention for the handler."
   type        = number

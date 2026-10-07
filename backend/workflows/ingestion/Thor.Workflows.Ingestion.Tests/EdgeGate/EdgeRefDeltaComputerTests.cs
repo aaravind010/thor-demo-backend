@@ -163,6 +163,22 @@ public sealed class EdgeRefDeltaComputerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ComputeAsync_OwnerWithThousandsOfRefs_ProducesExactAddAndRemoveSets()
+    {
+        var manifestId = Guid.NewGuid();
+        var oldRefs = Enumerable.Range(0, 5000).Select(i => RefJson("MEMBER_OF", "in", $"cn=u{i},dc=test", "account")).ToArray();
+        var newRefs = Enumerable.Range(1000, 5000).Select(i => RefJson("MEMBER_OF", "in", $"cn=u{i},dc=test", "account")).ToArray();
+        await InsertCanonicalAccountAsync("big-owner", RawAttributesJson(oldRefs));
+        await StageAccountAsync(manifestId, "big-owner", RawAttributesJson(newRefs));
+
+        await _computer.ComputeAsync(_context, manifestId, "tenant.account", "account");
+
+        var rows = await DeltaRowsAsync(manifestId);
+        Assert.Equal(1000, rows.Count(r => r.Op == "remove"));
+        Assert.Equal(1000, rows.Count(r => r.Op == "add"));
+    }
+
+    [Fact]
     public async Task ComputeAsync_ThrowsWhenCancelled()
     {
         var manifestId = Guid.NewGuid();

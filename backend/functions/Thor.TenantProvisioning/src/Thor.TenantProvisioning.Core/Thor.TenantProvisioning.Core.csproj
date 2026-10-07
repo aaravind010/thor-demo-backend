@@ -12,6 +12,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\..\..\shared\Thor.DataLayer\Thor.DataLayer.csproj" />
+    <ProjectReference Include="..\..\..\..\shared\Thor.DataConnectionManager\Thor.DataConnectionManager.csproj" />
   </ItemGroup>
 
 </Project>

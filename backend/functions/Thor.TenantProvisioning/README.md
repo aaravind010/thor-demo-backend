@@ -17,9 +17,10 @@ The workflow is triggered on-demand (e.g. a GitHub Actions `workflow_dispatch` c
 | 4 | `CreateAdminUser` | `CreateAdminUserFunction` | `AdminCreateUser` for the local admin + add to group (Cognito sends the invite). |
 | 5 | `ConfigureSubdomain` | `ConfigureSubdomainFunction` | UPSERT the Route53 record `{subdomain}.{baseDomain}`. |
 | 6 | `FinalizeRouting` | `FinalizeRoutingFunction` | Upsert `tenant_routing` (the `_rw`/`_ro` **db-user names**) and flip the tenant to `Active`. |
+| 7 | `SeedUnclassifiedAccountType` | `SeedUnclassifiedAccountTypeFunction` | Insert the well-known `Unclassified` account type into the tenant DB via `ITenantConnectionManager` (needs the routing row from step 6); a no-op if present. |
 
 Every step is **idempotent** so Step Functions retries / DLQ redrive replay safely
-(ADR §16). The tenant is only marked `Active` in the final step (fail-closed, ADR §1).
+(ADR §16). The tenant is marked `Active` by `FinalizeRouting` (fail-closed, ADR §1); the seeding step after it only adds default data.
 
 ## Auth model (see the plan for rationale)
 

@@ -198,7 +198,7 @@ exactly one file's `IngestionRequest`; `ExportLocation` supplies only the bucket
 S3 surfaces as a natural `GetObject` failure that propagates, rather than a silent shortfall.
 
 The file's `FileLocation` is `Thor.S3.UploadKeyParser.TryParse`'d for its own
-`TenantId`/`SourceId`/`ScanId` (`tenants/{tenantId}/uploads/{sourceId}/{scanId}/{fileName}` — the
+`TenantId`/`SourceId`/`ScanId` (`tenants/{tenantId}/uploads/{scanId}/{sourceId}/{fileName}` — the
 same key shape in `UploadService.CreatePresignedUploadUrlAsync`; a parsed `TenantId` that doesn't
 match the request's own `TenantId`, or a parsed `ScanId` that doesn't match the request's own
 `ScanId`, throws (fail-closed; both checks are data-integrity checks, not security boundaries,
@@ -388,6 +388,11 @@ heterogeneous props (e.g. only some carry CyberArk permission data).
 starting at 200ms) on a thrown exception or a 5xx response; a 4xx fails immediately as a
 caller/config error.
 
+Neptune runs one bulk load at a time per cluster, so the start request sets `queueRequest: TRUE`:
+a load submitted while another is active is queued and returns its `loadId` immediately
+(`LOAD_IN_QUEUE`, treated as in progress by the poll). Without it, Neptune rejects the request
+with "Max concurrent load limit breached".
+
 `GraphLoadPollStep` checks the load job's status **once** per invocation — it does not wait or
 loop in-process. Completion (no row errors) marks the job/workflow `"completed"`. Completion
 with row errors or outright failure marks the job `"failed"` and throws, mapping to a non-zero
@@ -395,7 +400,8 @@ exit code (ECS) or a Lambda invocation error, for Step Functions to catch/escala
 status leaves the job/workflow in their in-flight (`"started"`) state and reports "in progress"
 via the step's own result (`GraphLoadPollResult.Outcome`/`IsInProgress`) rather than throwing —
 Step Functions is expected to wait and re-invoke this step later rather than the step blocking
-on its own. That signal is a field in the JSON response, which is why this step runs on Lambda:
+on its own. The poll looks at the manifest's latest job whatever its status: an already-`"failed"`
+job rethrows, so Step Functions' retry of a failed poll cannot be read as "nothing to load". That signal is a field in the JSON response, which is why this step runs on Lambda:
 Lambda's return value is visible to Step Functions directly, and `ecs:runTask.sync`'s is not.
 
 Vertex/edge ids follow one scheme (`{tenantId}:{entityType}:{id}`) with the tenant id baked

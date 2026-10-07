@@ -109,3 +109,13 @@ variable "tags" {
   default     = {}
   description = "Additional resource-specific tags"
 }
+
+variable "rds_proxy_resource_id" {
+  type        = string
+  description = "RDS Proxy resource ID (prx-...) — scopes the account-type seeding Lambda's rds-db:connect ARN to the tenant _rw roles it reaches through the proxy"
+}
+
+variable "rds_proxy_security_group_id" {
+  type        = string
+  description = "RDS Proxy security group — granted ingress on 5432 from the provisioning Lambdas so the account-type seeding Lambda can reach tenant DBs"
+}

@@ -98,6 +98,20 @@
         }
       ],
       "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "ProvisioningFailed" }],
+      "Next": "SeedUnclassifiedAccountType"
+    },
+    "SeedUnclassifiedAccountType": {
+      "Type": "Task",
+      "Resource": "${SeedUnclassifiedAccountTypeFunctionArn}",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed", "Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "ProvisioningFailed" }],
       "End": true
     },
     "ProvisioningFailed": {

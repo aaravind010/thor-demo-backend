@@ -44,11 +44,13 @@ public sealed class NeptuneBulkLoaderClient : INeptuneBulkLoaderClient, IDisposa
         _logger = (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger<NeptuneBulkLoaderClient>();
     }
 
-    public async Task<BulkLoadStartResult> StartLoadAsync(Uri s3SourceUri, string iamRoleArn, string region, CancellationToken cancellationToken = default)
+    public async Task<BulkLoadStartResult> StartLoadAsync(
+        Uri s3SourceUri, string iamRoleArn, string region, IReadOnlyList<string>? dependsOnLoadIds = null, CancellationToken cancellationToken = default)
     {
         var body = new StartLoadRequestBody(
             Source: s3SourceUri.ToString(), Format: "csv", IamRoleArn: iamRoleArn, Region: region,
-            FailOnError: "FALSE", Parallelism: "MEDIUM");
+            FailOnError: "FALSE", Parallelism: "HIGH", QueueRequest: "TRUE",
+            UpdateSingleCardinalityProperties: "TRUE", Dependencies: dependsOnLoadIds);
 
         using var response = await SendWithRetryAsync(() => _http.PostAsJsonAsync("loader", body, cancellationToken), cancellationToken);
         await EnsureSuccessAsync(response, cancellationToken);
@@ -70,7 +72,7 @@ public sealed class NeptuneBulkLoaderClient : INeptuneBulkLoaderClient, IDisposa
             ?? throw new InvalidOperationException("Neptune bulk loader status response did not contain an overallStatus.");
 
         var errorMessages = parsed.Payload?.Errors?.ErrorLogs?
-            .Select(e => e.ErrorMessage)
+            .Select(e => e.Describe())
             .Where(m => !string.IsNullOrEmpty(m))
             .Select(m => m!)
             .ToList() ?? [];

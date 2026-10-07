@@ -32,7 +32,10 @@ internal sealed record StartLoadRequestBody(
     [property: JsonPropertyName("iamRoleArn")] string IamRoleArn,
     [property: JsonPropertyName("region")] string Region,
     [property: JsonPropertyName("failOnError")] string FailOnError,
-    [property: JsonPropertyName("parallelism")] string Parallelism);
+    [property: JsonPropertyName("parallelism")] string Parallelism,
+    [property: JsonPropertyName("queueRequest")] string QueueRequest,
+    [property: JsonPropertyName("updateSingleCardinalityProperties")] string UpdateSingleCardinalityProperties,
+    [property: JsonPropertyName("dependencies"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<string>? Dependencies);
 
 internal sealed record StartLoadResponse([property: JsonPropertyName("payload")] StartLoadPayload? Payload);
 internal sealed record StartLoadPayload([property: JsonPropertyName("loadId")] string LoadId);
@@ -52,4 +55,21 @@ internal sealed record LoadOverallStatus(
 
 internal sealed record LoadErrors([property: JsonPropertyName("errorLogs")] IReadOnlyList<LoadErrorLog>? ErrorLogs);
 
-internal sealed record LoadErrorLog([property: JsonPropertyName("errorMessage")] string? ErrorMessage);
+internal sealed record LoadErrorLog(
+    [property: JsonPropertyName("errorCode")] string? ErrorCode,
+    [property: JsonPropertyName("errorMessage")] string? ErrorMessage,
+    [property: JsonPropertyName("fileName")] string? FileName,
+    [property: JsonPropertyName("recordNum")] long? RecordNum)
+{
+    /// <summary>One-line description of the failed row: "{code}: {message} ({file} record {n})", omitting absent parts.</summary>
+    public string? Describe()
+    {
+        if (string.IsNullOrEmpty(ErrorMessage) && string.IsNullOrEmpty(ErrorCode))
+        {
+            return null;
+        }
+
+        var text = string.Join(": ", new[] { ErrorCode, ErrorMessage }.Where(p => !string.IsNullOrEmpty(p)));
+        return string.IsNullOrEmpty(FileName) ? text : $"{text} ({FileName} record {RecordNum})";
+    }
+}

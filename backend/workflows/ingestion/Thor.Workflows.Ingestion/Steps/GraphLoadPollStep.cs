@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -88,20 +89,36 @@ public sealed class GraphLoadPollStep : WorkflowStep<IngestionRequest>
         try
         {
             var job = await db.GraphBulkLoadJobs
-                .Where(j => j.ScanId == scanId && j.ScanManifestId == scanManifestId && j.Status == "started")
+                .Where(j => j.ScanId == scanId && j.ScanManifestId == scanManifestId)
                 .OrderByDescending(j => j.StartedAt)
                 .FirstOrDefaultAsync(cancellationToken);
-            if (job is null)
+            if (job is { Status: "failed" })
+            {
+                // A retried poll must not mistake an already-failed load for "nothing to load".
+                throw new InvalidOperationException($"Neptune bulk load job {job.Id} failed: {job.ErrorSummary}");
+            }
+
+            if (job is not { Status: "started" })
             {
                 logger.LogInformation("No pending bulk load job for scan {ScanId} — nothing to poll.", scanId);
                 await workflowLifecycle.MarkCompletedAsync(scanManifestId, WorkflowTypes.Ingestion, runId, cancellationToken: cancellationToken);
                 return new GraphLoadPollResult("no-pending-job", null, workflowId);
             }
 
-            var loadId = job.LoadId
+            var loadId = job.PrimaryLoadId
                 ?? throw new InvalidOperationException($"GraphBulkLoadJob {job.Id} has status 'started' but no LoadId.");
 
             var status = await _bulkLoader.GetLoadStatusAsync(loadId, cancellationToken);
+            var loadLabel = job.EdgeLoadId is null ? "" : "Vertex load: ";
+
+            // The edge load is queued behind the vertex load, so it is only checked once the vertex
+            // load has completed cleanly — a failed vertex load is reported as itself, not as the
+            // edge load's dependency failure.
+            if (job.EdgeLoadId is not null && status.Status == BulkLoadStatus.Completed && !status.HasRowErrors)
+            {
+                status = await _bulkLoader.GetLoadStatusAsync(job.EdgeLoadId, cancellationToken);
+                loadLabel = "Edge load: ";
+            }
 
             if (status.Status == BulkLoadStatus.Completed && !status.HasRowErrors)
             {
@@ -128,15 +145,15 @@ public sealed class GraphLoadPollStep : WorkflowStep<IngestionRequest>
 
             if (status.Status == BulkLoadStatus.Failed || status.HasRowErrors)
             {
-                var summary = status.HasRowErrors
-                    ? $"Completed with row errors: {status.ParsingErrors} parsing, {status.DatatypeMismatchErrors} datatype, {status.InsertErrors} insert."
-                    : $"Status {status.RawStatus}: {string.Join("; ", status.ErrorMessages)}";
+                var summary = loadLabel + (status.HasRowErrors
+                    ? $"Completed with row errors: {status.ParsingErrors} parsing, {status.DatatypeMismatchErrors} datatype, {status.InsertErrors} insert. Sample errors: {string.Join("; ", status.ErrorMessages.Take(5))}"
+                    : $"Status {status.RawStatus}: {string.Join("; ", status.ErrorMessages)}");
                 job.Status = "failed";
                 job.CompletedAt = DateTimeOffset.UtcNow;
                 job.ErrorSummary = summary;
                 await db.SaveChangesAsync(cancellationToken);
                 logger.LogError("Bulk load {LoadId} for scan {ScanId} failed: {Summary}", loadId, scanId, summary);
-                throw new InvalidOperationException($"Neptune bulk load {loadId} failed: {summary}");
+                throw new InvalidOperationException($"Neptune bulk load {status.LoadId} failed: {summary}");
             }
 
             // Still running: leave the job/workflow rows in their in-flight state (not
@@ -146,12 +163,21 @@ public sealed class GraphLoadPollStep : WorkflowStep<IngestionRequest>
             logger.LogInformation("Bulk load {LoadId} for scan {ScanId} is still in progress.", loadId, scanId);
             return new GraphLoadPollResult("in-progress", loadId, workflowId);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!IsTransient(ex, cancellationToken))
         {
             await workflowLifecycle.MarkFailedAsync(scanManifestId, WorkflowTypes.Ingestion, ex.Message, runId, IngestionStatuses.GraphLoadFailed, cancellationToken);
             throw;
         }
     }
+
+    /// <summary>True for a failed Neptune status call that a later poll can succeed at; the exception propagates for Step Functions to retry, without marking the workflow failed.</summary>
+    private static bool IsTransient(Exception ex, CancellationToken cancellationToken) => ex switch
+    {
+        NeptuneBulkLoadException { StatusCode: >= HttpStatusCode.InternalServerError } => true,
+        HttpRequestException => true,
+        TaskCanceledException => !cancellationToken.IsCancellationRequested,
+        _ => false,
+    };
 
     private static List<PendingVertexDelete> DeserializePendingVertexDeletes(string? json) =>
         json is null ? [] : JsonSerializer.Deserialize<List<PendingVertexDelete>>(json) ?? [];

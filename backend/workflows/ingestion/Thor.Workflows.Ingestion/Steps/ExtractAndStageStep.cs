@@ -11,6 +11,7 @@ using Thor.Workflows.Hosting.Composition;
 using Thor.Workflows.Ingestion.AttributeMapping;
 using Thor.Workflows.Ingestion.Constants;
 using Thor.Workflows.Ingestion.Extraction.Sources;
+using Thor.Workflows.Ingestion.Models;
 using Thor.Workflows.Ingestion.Normalization;
 using Thor.Workflows.Ingestion.Staging;
 
@@ -217,23 +218,37 @@ public sealed class ExtractAndStageStep : WorkflowStep<IngestionRequest>
 
         var identifier = $"s3://{bucket}/{fileLocation}";
         var zipBytes = await _exportSource.ReadAsync(identifier, cancellationToken);
-        var rawBytes = ZipExportReader.ReadFirstEntry(zipBytes);
-        var batch = normalizer.Normalize(rawBytes, parsed.SourceId);
-        if (batch.RepairedCount > 0)
+        IEnumerable<IngestBatch> batches = normalizer is IStreamingConnectorNormalizer streaming
+            ? streaming.NormalizeBatches(() => ZipExportReader.OpenFirstEntry(zipBytes), parsed.SourceId)
+            : new[] { normalizer.Normalize(ZipExportReader.ReadFirstEntry(zipBytes), parsed.SourceId) };
+
+        int accounts = 0, groups = 0, assets = 0, entitlements = 0, identities = 0, repaired = 0, skipped = 0;
+        foreach (var batch in batches)
         {
-            logger.LogInformation("Recovered {RepairedCount} malformed/oddly-shaped record(s) from {Identifier}", batch.RepairedCount, identifier);
+            await stager.StageAsync(batch, tenantId, scanManifestId, fileSeq, cancellationToken);
+            accounts += batch.Accounts.Count;
+            groups += batch.Groups.Count;
+            assets += batch.Assets.Count;
+            entitlements += batch.Entitlements.Count;
+            identities += batch.Identities.Count;
+            repaired += batch.RepairedCount;
+            skipped += batch.SkippedCount;
         }
-        if (batch.SkippedCount > 0)
+
+        if (repaired > 0)
         {
-            logger.LogWarning("Dropped {SkippedCount} unrecoverable record(s) from {Identifier}", batch.SkippedCount, identifier);
+            logger.LogInformation("Recovered {RepairedCount} malformed/oddly-shaped record(s) from {Identifier}", repaired, identifier);
         }
-        await stager.StageAsync(batch, tenantId, scanManifestId, fileSeq, cancellationToken);
+        if (skipped > 0)
+        {
+            logger.LogWarning("Dropped {SkippedCount} unrecoverable record(s) from {Identifier}", skipped, identifier);
+        }
 
         logger.LogInformation(
             "Extract+stage complete for file {FileLocation} (scan manifest {ScanManifestId}): {AccountsStaged} account(s)/{GroupsStaged} group(s)/{AssetsStaged} asset(s)/{EntitlementsStaged} entitlement(s)/{IdentitiesStaged} identity(s) staged",
-            fileLocation, scanManifestId, batch.Accounts.Count, batch.Groups.Count, batch.Assets.Count, batch.Entitlements.Count, batch.Identities.Count);
+            fileLocation, scanManifestId, accounts, groups, assets, entitlements, identities);
 
-        return new ExtractAndStageFileResult(fileLocation, batch.Accounts.Count, batch.Groups.Count, batch.Assets.Count, batch.Entitlements.Count, batch.Identities.Count);
+        return new ExtractAndStageFileResult(fileLocation, accounts, groups, assets, entitlements, identities);
     }
 
     /// <summary>

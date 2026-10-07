@@ -1,9 +1,9 @@
 {
   "service": "task-api",
   "dev": {
-    "digest": "sphereco.jfrog.io/thor-docker-local/task-api@sha256:ffdad630d0b721aadd7203cba99a160981f3d70cec53ec810ed3202b5781e388",
-    "commitId": "5f86653ca7f3fc6b62b2afdc1152402f133df9de",
-    "deployedAt": "2026-09-30T09:21:36Z"
+    "digest": "sphereco.jfrog.io/thor-docker-local/task-api@sha256:0e66ab35ee070678c008aa79ceefd04762d0fd2b030bdd2db73ec46f8e8e4a07",
+    "commitId": "5ec3731a73bb09eec018caf7f731031dacd7a4a6",
+    "deployedAt": "2026-10-07T10:47:13Z"
   },
   "qa": {
     "digest": "",

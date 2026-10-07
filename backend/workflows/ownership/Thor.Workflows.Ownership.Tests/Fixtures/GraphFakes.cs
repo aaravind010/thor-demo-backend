@@ -45,7 +45,7 @@ public sealed class FakeBulkLoaderClient(params BulkLoadStatus[] statuses) : INe
 
     public long InsertErrors { get; init; }
 
-    public Task<BulkLoadStartResult> StartLoadAsync(Uri s3SourceUri, string iamRoleArn, string region, CancellationToken cancellationToken = default)
+    public Task<BulkLoadStartResult> StartLoadAsync(Uri s3SourceUri, string iamRoleArn, string region, IReadOnlyList<string>? dependsOnLoadIds = null, CancellationToken cancellationToken = default)
     {
         if (FailStart)
         {

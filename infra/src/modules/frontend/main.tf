@@ -64,7 +64,9 @@ resource "aws_cloudfront_distribution" "thor-fe-cdn" {
   default_root_object = "index.html"
   price_class         = var.price_class
   web_acl_id          = aws_wafv2_web_acl.thor-fe-waf.arn
-  aliases             = local.use_custom_domain ? [var.domain_name] : []
+  # The wildcard serves every tenant subdomain (<tenant>.<domain_name>), whose provisioned CNAME
+  # points here; CloudFront rejects any hostname not listed. The ACM cert already covers it.
+  aliases = local.use_custom_domain ? [var.domain_name, "*.${var.domain_name}"] : []
 
   origin {
     domain_name              = aws_s3_bucket.thor-fe-bucket.bucket_regional_domain_name

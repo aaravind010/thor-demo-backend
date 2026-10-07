@@ -46,11 +46,12 @@ public sealed class GraphLoadPollStepTests : IAsyncLifetime
     }
 
     private async Task<Guid> SeedPendingJobAsync(
-        Guid scanId, Guid scanManifestId, string loadId, string? pendingVertexDeletes = null, string? pendingEdgeDeletes = null)
+        Guid scanId, Guid scanManifestId, string loadId, string? pendingVertexDeletes = null, string? pendingEdgeDeletes = null,
+        string? edgeLoadId = null)
     {
         var job = new GraphBulkLoadJob
         {
-            Id = Guid.NewGuid(), ScanId = scanId, ScanManifestId = scanManifestId, LoadId = loadId, S3Uri = "s3://bucket/prefix/",
+            Id = Guid.NewGuid(), ScanId = scanId, ScanManifestId = scanManifestId, LoadId = edgeLoadId is null ? loadId : $"{loadId},{edgeLoadId}", S3Uri = "s3://bucket/prefix/",
             Status = "started", StartedAt = DateTimeOffset.UtcNow,
             PendingVertexDeletes = pendingVertexDeletes, PendingEdgeDeletes = pendingEdgeDeletes,
         };
@@ -92,7 +93,7 @@ public sealed class GraphLoadPollStepTests : IAsyncLifetime
     {
         private int _callCount;
 
-        public Task<BulkLoadStartResult> StartLoadAsync(Uri s3SourceUri, string iamRoleArn, string region, CancellationToken cancellationToken = default) =>
+        public Task<BulkLoadStartResult> StartLoadAsync(Uri s3SourceUri, string iamRoleArn, string region, IReadOnlyList<string>? dependsOnLoadIds = null, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException("GraphLoadPollStep never starts a load.");
 
         public Task<BulkLoadStatusResult> GetLoadStatusAsync(string loadId, CancellationToken cancellationToken = default)
@@ -186,6 +187,63 @@ public sealed class GraphLoadPollStepTests : IAsyncLifetime
 
         var otherJob = await _context.GraphBulkLoadJobs.SingleAsync(j => j.ScanManifestId == otherManifestId);
         Assert.Equal("started", otherJob.Status);
+    }
+
+    [Fact]
+    public async Task RunAsync_VertexLoadCompletedEdgeLoadInProgress_ReturnsInProgress()
+    {
+        var scanId = await CreateScanAsync();
+        var scanManifestId = await CreateManifestAsync(scanId);
+        await SeedPendingJobAsync(scanId, scanManifestId, "load-v", edgeLoadId: "load-e");
+        var step = BuildStep(new FakeBulkLoaderClient(Completed("load-v"), InProgress("load-e")));
+
+        var result = await step.RunAsync(_context, Guid.NewGuid(), scanId, scanManifestId);
+
+        Assert.True(result.IsInProgress);
+        Assert.Equal("started", (await _context.GraphBulkLoadJobs.SingleAsync(j => j.ScanManifestId == scanManifestId)).Status);
+    }
+
+    [Fact]
+    public async Task RunAsync_VertexAndEdgeLoadsCompleted_MarksJobCompleted()
+    {
+        var scanId = await CreateScanAsync();
+        var scanManifestId = await CreateManifestAsync(scanId);
+        await SeedPendingJobAsync(scanId, scanManifestId, "load-v", edgeLoadId: "load-e");
+        var step = BuildStep(new FakeBulkLoaderClient(Completed("load-v"), Completed("load-e")));
+
+        var result = await step.RunAsync(_context, Guid.NewGuid(), scanId, scanManifestId);
+
+        Assert.Equal("completed", result.Outcome);
+        Assert.Equal("completed", (await _context.GraphBulkLoadJobs.SingleAsync(j => j.ScanManifestId == scanManifestId)).Status);
+    }
+
+    [Fact]
+    public async Task RunAsync_VertexLoadHasRowErrors_FailsWithoutCheckingEdgeLoad()
+    {
+        var scanId = await CreateScanAsync();
+        var scanManifestId = await CreateManifestAsync(scanId);
+        await SeedPendingJobAsync(scanId, scanManifestId, "load-v", edgeLoadId: "load-e");
+        var step = BuildStep(new FakeBulkLoaderClient(CompletedWithRowErrors("load-v"), Completed("load-e")));
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => step.RunAsync(_context, Guid.NewGuid(), scanId, scanManifestId));
+
+        Assert.Contains("Vertex load:", ex.Message);
+        var job = await _context.GraphBulkLoadJobs.SingleAsync(j => j.ScanManifestId == scanManifestId);
+        Assert.Equal("failed", job.Status);
+    }
+
+    [Fact]
+    public async Task RunAsync_EdgeLoadFails_FailsJobAndNamesEdgeLoad()
+    {
+        var scanId = await CreateScanAsync();
+        var scanManifestId = await CreateManifestAsync(scanId);
+        await SeedPendingJobAsync(scanId, scanManifestId, "load-v", edgeLoadId: "load-e");
+        var step = BuildStep(new FakeBulkLoaderClient(Completed("load-v"), Failed("load-e", "boom")));
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => step.RunAsync(_context, Guid.NewGuid(), scanId, scanManifestId));
+
+        Assert.Contains("load-e", ex.Message);
+        Assert.Contains("Edge load:", ex.Message);
     }
 
     [Fact]
@@ -291,6 +349,55 @@ public sealed class GraphLoadPollStepTests : IAsyncLifetime
         var workflow = await _context.Workflows.SingleAsync(w => w.ScanManifestId == scanManifestId);
         Assert.Equal("graph_load_failed", workflow.Status);
         Assert.Contains("s3 access denied", workflow.Error);
+    }
+
+    [Fact]
+    public async Task RunAsync_RetriedAfterFailedLoad_ThrowsAgain_AndLeavesWorkflowFailed()
+    {
+        var scanId = await CreateScanAsync();
+        var scanManifestId = await CreateManifestAsync(scanId);
+        await SeedPendingJobAsync(scanId, scanManifestId, "load-3c");
+        var step = BuildStep(new FakeBulkLoaderClient(Failed("load-3c", "s3 access denied")));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => step.RunAsync(_context, Guid.NewGuid(), scanId, scanManifestId));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => step.RunAsync(_context, Guid.NewGuid(), scanId, scanManifestId));
+
+        var workflow = await _context.Workflows.SingleAsync(w => w.ScanManifestId == scanManifestId);
+        Assert.Equal("graph_load_failed", workflow.Status);
+    }
+
+    [Fact]
+    public async Task RunAsync_FailedJobFollowedByNewerStartedJob_PollsTheNewerJob()
+    {
+        var scanId = await CreateScanAsync();
+        var scanManifestId = await CreateManifestAsync(scanId);
+        _context.GraphBulkLoadJobs.Add(new GraphBulkLoadJob
+        {
+            Id = Guid.NewGuid(), ScanId = scanId, ScanManifestId = scanManifestId, LoadId = "load-old", S3Uri = "s3://bucket/old/",
+            Status = "failed", StartedAt = DateTimeOffset.UtcNow.AddMinutes(-5), ErrorSummary = "boom",
+        });
+        await _context.SaveChangesAsync();
+        await SeedPendingJobAsync(scanId, scanManifestId, "load-new");
+        var step = BuildStep(new FakeBulkLoaderClient(Completed("load-new")));
+
+        var result = await step.RunAsync(_context, Guid.NewGuid(), scanId, scanManifestId);
+
+        Assert.Equal("completed", result.Outcome);
+        Assert.Equal("load-new", result.LoadId);
+    }
+
+    [Fact]
+    public async Task RunAsync_Queued_ReportsInProgress()
+    {
+        var scanId = await CreateScanAsync();
+        var scanManifestId = await CreateManifestAsync(scanId);
+        await SeedPendingJobAsync(scanId, scanManifestId, "load-q");
+        var queued = new BulkLoadStatusResult("load-q", BulkLoadStatus.InProgress, "LOAD_IN_QUEUE", 0, 0, 0, 0, []);
+        var step = BuildStep(new FakeBulkLoaderClient(queued));
+
+        var result = await step.RunAsync(_context, Guid.NewGuid(), scanId, scanManifestId);
+
+        Assert.True(result.IsInProgress);
     }
 
     [Fact]

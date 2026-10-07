@@ -193,7 +193,7 @@ public sealed class OwnershipGraphLoadStartStep : WorkflowStep<OwnershipRequest>
                 UploadAsync(GremlinCsvWriter.WriteEdgeCsv(request.TenantId, ownedByEdges),
                     $"{s3Prefix}/edges/owned_by.csv", cancellationToken));
 
-            var startResult = await _bulkLoader.StartLoadAsync(s3Uri, _iamRoleArn, _region, cancellationToken);
+            var startResult = await _bulkLoader.StartLoadAsync(s3Uri, _iamRoleArn, _region, cancellationToken: cancellationToken);
 
             reservedJob.LoadId = startResult.LoadId;
             reservedJob.Status = "started";

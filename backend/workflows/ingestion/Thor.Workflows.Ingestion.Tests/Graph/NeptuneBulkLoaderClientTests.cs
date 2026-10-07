@@ -67,6 +67,30 @@ public sealed class NeptuneBulkLoaderClientTests
         Assert.Equal("https://neptune-test:8182/loader", handler.LastRequest.RequestUri!.ToString());
         Assert.Contains("\"iamRoleArn\":\"arn:aws:iam::123:role/neptune-load\"", handler.LastRequestBody);
         Assert.Contains("\"source\":\"s3://bucket/prefix/\"", handler.LastRequestBody);
+        Assert.Contains("\"queueRequest\":\"TRUE\"", handler.LastRequestBody);
+    }
+
+    [Fact]
+    public async Task StartLoadAsync_SetsUpdateSingleCardinalityTrue_AndOmitsDependenciesByDefault()
+    {
+        var handler = new FakeHttpMessageHandler(_ => JsonResponse("""{"status":"200 OK","payload":{"loadId":"abc-123"}}"""));
+        using var client = BuildClient(handler);
+
+        await client.StartLoadAsync(new Uri("s3://bucket/prefix/"), "arn:aws:iam::123:role/x", "us-east-1");
+
+        Assert.Contains("\"updateSingleCardinalityProperties\":\"TRUE\"", handler.LastRequestBody);
+        Assert.DoesNotContain("dependencies", handler.LastRequestBody);
+    }
+
+    [Fact]
+    public async Task StartLoadAsync_WithDependencies_SendsThemInTheRequest()
+    {
+        var handler = new FakeHttpMessageHandler(_ => JsonResponse("""{"status":"200 OK","payload":{"loadId":"abc-123"}}"""));
+        using var client = BuildClient(handler);
+
+        await client.StartLoadAsync(new Uri("s3://bucket/prefix/"), "arn:aws:iam::123:role/x", "us-east-1", ["load-1"]);
+
+        Assert.Contains("\"dependencies\":[\"load-1\"]", handler.LastRequestBody);
     }
 
     [Fact]

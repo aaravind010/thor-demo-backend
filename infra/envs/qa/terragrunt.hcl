@@ -101,7 +101,7 @@ inputs = {
           domain_name      = "qa.sphereboarddev.ai"
           include_wildcard = true
         }
-        # CloudFront (API GW), us-east-1. include_wildcard covers per-tenant API routing (tenant1.api.qa.sphereboarddev.ai).
+        # CloudFront (API GW), us-east-1.
         api = {
           domain_name      = "api.qa.sphereboarddev.ai"
           include_wildcard = true

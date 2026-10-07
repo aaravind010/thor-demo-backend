@@ -79,6 +79,12 @@ variable "rds_proxy_resource_id" {
   description = "RDS Proxy resource ID (prx-...) — scopes each DB-accessing service's rds-db:connect ARN. The services connect through the proxy, so the ARN must name the proxy, not the cluster. Empty skips the grant (no DB services)."
 }
 
+variable "neptune_cluster_resource_id" {
+  type        = string
+  default     = ""
+  description = "Neptune cluster resource ID (cluster-...) — scopes thor-api's read-only neptune-db grant. The neptune-db action namespace is keyed by this ID, not the cluster identifier or ARN. Empty skips the grant (Neptune disabled)."
+}
+
 variable "master_db_app_user" {
   type        = string
   default     = "thor_app"

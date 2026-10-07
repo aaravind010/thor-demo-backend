@@ -26,6 +26,7 @@
     <ProjectReference Include="..\..\shared\Thor.Auth\Thor.Auth.csproj" />
     <ProjectReference Include="..\..\shared\Thor.DataConnectionManager\Thor.DataConnectionManager.csproj" />
     <ProjectReference Include="..\..\shared\Thor.Core\Thor.Core.csproj" />
+    <ProjectReference Include="..\..\shared\Thor.Graph\Thor.Graph.csproj" />
     <ProjectReference Include="..\..\shared\Thor.Rules\Thor.Rules.csproj" />
   </ItemGroup>
 

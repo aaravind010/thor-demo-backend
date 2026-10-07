@@ -1,8 +1,8 @@
 {
   "service": "workflow-ingestion",
   "dev": {
-    "digest": "sphereco.jfrog.io/thor-docker-local/workflow-ingestion@sha256:31ddb65950ac18754d986c84dbb62ed1212cd9d5211915742dcce21715b2fa14",
-    "commitId": "5f86653ca7f3fc6b62b2afdc1152402f133df9de",
-    "deployedAt": "2026-09-30T09:21:19Z"
+    "digest": "sphereco.jfrog.io/thor-docker-local/workflow-ingestion@sha256:4a5688a541fdf92f7e252c13684d8c8e01981e6256c038908c3eb8797d411fef",
+    "commitId": "5ec3731a73bb09eec018caf7f731031dacd7a4a6",
+    "deployedAt": "2026-10-07T10:47:28Z"
   }
 }

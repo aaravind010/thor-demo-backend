@@ -137,9 +137,11 @@ locals {
       # substitute, and the states:StartExecution grant behind each.
       chained_workflows = ["atre", "ownership"]
 
-      # Fargate memory (MiB) for the ECS half of the "both" steps. Must be valid for task_cpu (1024
-      # CPU allows 2048-8192 in 1024 steps).
-      task_memory = "4096"
+      # Fargate CPU units and memory (MiB) for the ECS half of the "both" steps, tunable per
+      # environment via settings. Must be a valid Fargate pair (1024 CPU allows 2048-8192 MiB, 2048
+      # CPU allows 4096-16384 MiB, both in 1024 steps).
+      task_cpu    = try(var.workflows["ingestion"].settings.task_cpu, "1024")
+      task_memory = try(var.workflows["ingestion"].settings.task_memory, "4096")
     }
 
     atre = {

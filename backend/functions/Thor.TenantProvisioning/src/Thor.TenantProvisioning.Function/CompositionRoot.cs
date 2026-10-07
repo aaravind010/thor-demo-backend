@@ -3,6 +3,10 @@ using Amazon.Lambda.Logging.AspNetCore;
 using Amazon.Route53;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Thor.DataConnectionManager;
+using Thor.DataConnectionManager.Caching;
+using Thor.DataConnectionManager.Routing;
+using Thor.DataConnectionManager.Validation;
 using Thor.DataLayer.Auth;
 using Thor.DataLayer.Data;
 using Thor.DataLayer.Repositories;
@@ -64,6 +68,13 @@ internal static class CompositionRoot
         services.AddSingleton<ITenantDatabaseProvisioner, PostgresTenantDatabaseProvisioner>();
         services.AddSingleton<ITenantSchemaMigrator, PostgresTenantSchemaMigrator>();
 
+        // --- tenant DB access for post-routing seeding (same connection flow as Thor.Api, ADR §6.3) ---
+        services.AddSingleton<ITenantRoutingResolver, TenantRoutingResolver>();
+        services.AddSingleton<ITenantConnectionValidator, TenantConnectionValidator>();
+        services.AddSingleton<TenantConnectionCache>();
+        services.AddSingleton<ITenantDbContextFactory, TenantDbContextFactory>();
+        services.AddSingleton<ITenantConnectionManager, TenantConnectionManager>();
+
         // --- AWS provisioners ---
         services.AddSingleton<IAmazonCognitoIdentityProvider>(_ => new AmazonCognitoIdentityProviderClient());
         services.AddSingleton<ICognitoProvisioner, CognitoProvisioner>();
@@ -83,6 +94,7 @@ internal static class CompositionRoot
         services.AddScoped<CreateAdminUserStep>();
         services.AddScoped<ConfigureSubdomainStep>();
         services.AddScoped<FinalizeRoutingStep>();
+        services.AddScoped<SeedUnclassifiedAccountTypeStep>();
 
         return services.BuildServiceProvider();
     }

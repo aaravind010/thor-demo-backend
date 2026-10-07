@@ -18,6 +18,7 @@ using Thor.Workflows.Hosting.Composition;
 using Thor.Workflows.Ingestion.Constants;
 using Thor.Workflows.Ingestion.EdgeGate;
 using Thor.Workflows.Ingestion.Orchestration;
+using EdgeLoadRow = (System.Guid EdgeId, string RelType, Thor.Graph.GraphVertexRef From, Thor.Graph.GraphVertexRef To, System.Collections.Generic.IReadOnlyDictionary<string, object?> Properties);
 
 namespace Thor.Workflows.Ingestion.Steps;
 
@@ -36,6 +37,7 @@ public sealed class GraphLoadStartStep : WorkflowStep<IngestionRequest>
     private readonly ITenantConnectionManager _tenantConnectionManager;
     private readonly IGraphVertexStore _vertexStore;
     private readonly IGraphEdgeStore _edgeStore;
+    private readonly IGraphVertexExistenceReader _existenceReader;
     private readonly IS3ObjectStore _s3;
     private readonly INeptuneBulkLoaderClient _bulkLoader;
     private readonly string _bucket;
@@ -46,7 +48,7 @@ public sealed class GraphLoadStartStep : WorkflowStep<IngestionRequest>
     /// <summary>Test seam — lets tests substitute fakes for every external dependency the parameterless constructor builds for real.</summary>
     public GraphLoadStartStep(
         ILoggerFactory loggerFactory, ITenantConnectionManager tenantConnectionManager,
-        IGraphVertexStore vertexStore, IGraphEdgeStore edgeStore, IS3ObjectStore s3,
+        IGraphVertexStore vertexStore, IGraphEdgeStore edgeStore, IGraphVertexExistenceReader existenceReader, IS3ObjectStore s3,
         INeptuneBulkLoaderClient bulkLoader, string bucket, string iamRoleArn, string region,
         TimeSpan startStaleThreshold)
     {
@@ -54,6 +56,7 @@ public sealed class GraphLoadStartStep : WorkflowStep<IngestionRequest>
         _tenantConnectionManager = tenantConnectionManager;
         _vertexStore = vertexStore;
         _edgeStore = edgeStore;
+        _existenceReader = existenceReader;
         _s3 = s3;
         _bulkLoader = bulkLoader;
         _bucket = bucket;
@@ -78,6 +81,7 @@ public sealed class GraphLoadStartStep : WorkflowStep<IngestionRequest>
         };
         _vertexStore = new GraphVertexStore(neptuneOptions);
         _edgeStore = new GraphEdgeStore(neptuneOptions);
+        _existenceReader = new GraphVertexExistenceReader(neptuneOptions);
         _s3 = new S3ObjectStore(new AmazonS3Client());
         _bulkLoader = new NeptuneBulkLoaderClient(neptuneOptions, _loggerFactory);
         _bucket = Environment.GetEnvironmentVariable("THOR_GRAPH_BULKLOAD_BUCKET")
@@ -126,7 +130,7 @@ public sealed class GraphLoadStartStep : WorkflowStep<IngestionRequest>
                         "Scan {ScanId} manifest {ScanManifestId} already has a pending bulk load ({Status}) — not starting another.",
                         scanId, scanManifestId, existing.Status);
                     await workflowLifecycle.MarkStatusAsync(scanManifestId, WorkflowTypes.Ingestion, IngestionStatuses.GraphLoadStarted, runId, cancellationToken);
-                    return new GraphLoadStartResult(0, 0, 0, 0, existing.LoadId);
+                    return new GraphLoadStartResult(0, 0, 0, 0, existing.PrimaryLoadId);
                 }
 
                 // The reservation never reached Neptune (no LoadId) and no container-crash
@@ -152,7 +156,9 @@ public sealed class GraphLoadStartStep : WorkflowStep<IngestionRequest>
             var (accountsToDelete, accountsToLoad) = await PartitionAccountsAsync(db, scanId, scanManifestId, cancellationToken);
             var (groupsToDelete, groupsToLoad) = await PartitionGroupsAsync(db, scanId, scanManifestId, cancellationToken);
             var assetsToLoad = await PartitionAssetsAsync(db, scanId, scanManifestId, cancellationToken);
-            var (edgesToDelete, edgesToLoad) = await PartitionEdgesAsync(db, scanId, scanManifestId, cancellationToken);
+            var (edgesToDelete, partitionedEdgesToLoad) = await PartitionEdgesAsync(db, scanId, scanManifestId, cancellationToken);
+            var edgesToLoad = await BackfillEndpointVerticesAsync(
+                db, tenantId, accountsToLoad, groupsToLoad, assetsToLoad, partitionedEdgesToLoad, logger, cancellationToken);
 
             var vertexCount = accountsToLoad.Count + groupsToLoad.Count + assetsToLoad.Count;
             var vertexDeletes = accountsToDelete.Concat(groupsToDelete).ToList();
@@ -174,6 +180,8 @@ public sealed class GraphLoadStartStep : WorkflowStep<IngestionRequest>
             var attemptId = Guid.NewGuid();
             var s3Prefix = $"graph-bulk-load/{tenantId:N}/{scanId:N}/{scanManifestId:N}/{attemptId:N}";
             var s3Uri = new Uri($"s3://{_bucket}/{s3Prefix}/");
+            var vertexSourceUri = new Uri($"s3://{_bucket}/{s3Prefix}/vertices/");
+            var edgeSourceUri = new Uri($"s3://{_bucket}/{s3Prefix}/edges/");
 
             // Reserve the job row BEFORE calling Neptune (not after) — a crash between
             // StartLoadAsync succeeding and this row being persisted would otherwise let a retry
@@ -211,7 +219,7 @@ public sealed class GraphLoadStartStep : WorkflowStep<IngestionRequest>
                     "Scan {ScanId} manifest {ScanManifestId} already has a pending bulk load (lost reservation race) — not starting another.",
                     scanId, scanManifestId);
                 await workflowLifecycle.MarkStatusAsync(scanManifestId, WorkflowTypes.Ingestion, IngestionStatuses.GraphLoadStarted, runId, cancellationToken);
-                return new GraphLoadStartResult(0, 0, 0, 0, winner?.LoadId);
+                return new GraphLoadStartResult(0, 0, 0, 0, winner?.PrimaryLoadId);
             }
             db.GraphBulkLoadJobs.Attach(reservedJob);
 
@@ -234,19 +242,34 @@ public sealed class GraphLoadStartStep : WorkflowStep<IngestionRequest>
             }
             await Task.WhenAll(uploadTasks);
 
-            var startResult = await _bulkLoader.StartLoadAsync(s3Uri, _iamRoleArn, _region, cancellationToken);
+            // Vertices and edges are separate loads: the edge load is queued behind the vertex load
+            // and only runs once it has completed successfully. With nothing but edges, the edge
+            // load is the job's only load and is tracked in LoadId.
+            string? vertexLoadId = null;
+            if (vertexCount > 0)
+            {
+                vertexLoadId = (await _bulkLoader.StartLoadAsync(vertexSourceUri, _iamRoleArn, _region, cancellationToken: cancellationToken)).LoadId;
+                reservedJob.LoadId = vertexLoadId;
+                await db.SaveChangesAsync(cancellationToken);
+            }
 
-            reservedJob.LoadId = startResult.LoadId;
+            if (edgesToLoad.Count > 0)
+            {
+                var edgeLoadId = (await _bulkLoader.StartLoadAsync(
+                    edgeSourceUri, _iamRoleArn, _region, vertexLoadId is null ? null : [vertexLoadId], cancellationToken)).LoadId;
+                reservedJob.LoadId = vertexLoadId is null ? edgeLoadId : $"{vertexLoadId},{edgeLoadId}";
+            }
+
             reservedJob.Status = "started";
             await db.SaveChangesAsync(cancellationToken);
 
             logger.LogInformation(
-                "Graph load start for scan {ScanId}: started load {LoadId} ({VertexCount} vertex/{EdgeCount} edge row(s)), " +
+                "Graph load start for scan {ScanId}: started load {LoadId} (edge load {EdgeLoadId}) ({VertexCount} vertex/{EdgeCount} edge row(s)), " +
                 "{VerticesQueuedForDelete} vertex delete(s)/{EdgesQueuedForDelete} edge delete(s) deferred until poll confirms success.",
-                scanId, startResult.LoadId, vertexCount, edgesToLoad.Count, vertexDeletes.Count, edgesToDelete.Count);
+                scanId, reservedJob.PrimaryLoadId, reservedJob.EdgeLoadId, vertexCount, edgesToLoad.Count, vertexDeletes.Count, edgesToDelete.Count);
 
             await workflowLifecycle.MarkStatusAsync(scanManifestId, WorkflowTypes.Ingestion, IngestionStatuses.GraphLoadStarted, runId, cancellationToken);
-            return new GraphLoadStartResult(0, 0, vertexCount, edgesToLoad.Count, startResult.LoadId);
+            return new GraphLoadStartResult(0, 0, vertexCount, edgesToLoad.Count, reservedJob.PrimaryLoadId);
         }
         catch (Exception ex)
         {
@@ -429,6 +452,79 @@ public sealed class GraphLoadStartStep : WorkflowStep<IngestionRequest>
         }
 
         return (toDelete, toLoad);
+    }
+
+    /// <summary>
+    /// Adds every edge endpoint that is missing from Neptune to the vertex load lists, so an edge never
+    /// references a vertex that isn't in the graph. Edges whose endpoint can't be loaded (soft-deleted
+    /// or absent in Postgres) are dropped from the returned list.
+    /// </summary>
+    private async Task<List<EdgeLoadRow>> BackfillEndpointVerticesAsync(
+        TenantDbContext db, Guid tenantId,
+        List<(Guid Id, IReadOnlyDictionary<string, object?> Properties)> accountsToLoad,
+        List<(Guid Id, IReadOnlyDictionary<string, object?> Properties)> groupsToLoad,
+        List<(Guid Id, IReadOnlyDictionary<string, object?> Properties)> assetsToLoad,
+        List<EdgeLoadRow> edgesToLoad, ILogger logger, CancellationToken cancellationToken)
+    {
+        if (edgesToLoad.Count == 0)
+        {
+            return edgesToLoad;
+        }
+
+        var ownVertices = accountsToLoad.Select(a => new GraphVertexRef("account", a.Id))
+            .Concat(groupsToLoad.Select(g => new GraphVertexRef("grp", g.Id)))
+            .Concat(assetsToLoad.Select(a => new GraphVertexRef("asset", a.Id)))
+            .ToHashSet();
+        var endpoints = edgesToLoad.SelectMany(e => new[] { e.From, e.To }).Where(v => !ownVertices.Contains(v)).Distinct().ToList();
+        if (endpoints.Count == 0)
+        {
+            return edgesToLoad;
+        }
+
+        var existing = await _existenceReader.GetExistingAsync(tenantId, endpoints, cancellationToken);
+        var missing = endpoints.Where(v => !existing.Contains(v)).ToList();
+        if (missing.Count == 0)
+        {
+            return edgesToLoad;
+        }
+
+        var backfilled = new HashSet<GraphVertexRef>();
+
+        var accountIds = missing.Where(v => v.EntityType == "account").Select(v => v.Id).ToList();
+        foreach (var account in await db.Accounts.Where(a => accountIds.Contains(a.Id) && !a.IsDeleted).ToListAsync(cancellationToken))
+        {
+            accountsToLoad.Add((account.Id, VertexProperties(account)));
+            backfilled.Add(new GraphVertexRef("account", account.Id));
+        }
+
+        var groupIds = missing.Where(v => v.EntityType == "grp").Select(v => v.Id).ToList();
+        foreach (var group in await db.Grps.Where(g => groupIds.Contains(g.Id) && !g.IsDeleted).ToListAsync(cancellationToken))
+        {
+            groupsToLoad.Add((group.Id, VertexProperties(group)));
+            backfilled.Add(new GraphVertexRef("grp", group.Id));
+        }
+
+        var assetIds = missing.Where(v => v.EntityType == "asset").Select(v => v.Id).ToList();
+        foreach (var asset in await db.Assets.Where(a => assetIds.Contains(a.Id)).ToListAsync(cancellationToken))
+        {
+            assetsToLoad.Add((asset.Id, VertexProperties(asset)));
+            backfilled.Add(new GraphVertexRef("asset", asset.Id));
+        }
+
+        var unresolved = missing.Where(v => !backfilled.Contains(v)).ToHashSet();
+        logger.LogInformation(
+            "Graph load start: {BackfilledCount} edge endpoint vertex(es) missing from Neptune added to the load, {UnresolvedCount} unresolvable.",
+            backfilled.Count, unresolved.Count);
+        if (unresolved.Count == 0)
+        {
+            return edgesToLoad;
+        }
+
+        var kept = edgesToLoad.Where(e => !unresolved.Contains(e.From) && !unresolved.Contains(e.To)).ToList();
+        logger.LogWarning(
+            "Graph load start: dropping {DroppedEdgeCount} edge(s) whose endpoint is soft-deleted or absent in Postgres and not in Neptune.",
+            edgesToLoad.Count - kept.Count);
+        return kept;
     }
 
     private static async Task<IReadOnlyList<Guid>> ChangedEntityIdsAsync(TenantDbContext db, Guid scanId, Guid scanManifestId, string entityType, CancellationToken cancellationToken) =>

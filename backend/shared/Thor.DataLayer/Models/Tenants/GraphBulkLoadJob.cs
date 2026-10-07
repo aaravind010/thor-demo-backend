@@ -24,9 +24,17 @@ public sealed class GraphBulkLoadJob
     [Column("scan_manifest_id")]
     public Guid ScanManifestId { get; set; }
 
-    /// <summary>Null while <see cref="Status"/> is "starting" — set once Neptune accepts the load and returns an id.</summary>
+    /// <summary>Null while <see cref="Status"/> is "starting" — set once Neptune accepts the load and returns an id. Holds "vertexLoadId,edgeLoadId" when an edge load is queued behind a vertex load.</summary>
     [Column("load_id")]
     public string? LoadId { get; set; }
+
+    /// <summary>The first (or only) load id in <see cref="LoadId"/>.</summary>
+    [NotMapped]
+    public string? PrimaryLoadId => LoadId?.Split(',')[0];
+
+    /// <summary>The edge load queued behind <see cref="PrimaryLoadId"/>; null when the job has a single load.</summary>
+    [NotMapped]
+    public string? EdgeLoadId => LoadId?.Split(',') is [_, var edgeLoadId] ? edgeLoadId : null;
 
     [Column("s3_uri")]
     public string S3Uri { get; set; } = null!;

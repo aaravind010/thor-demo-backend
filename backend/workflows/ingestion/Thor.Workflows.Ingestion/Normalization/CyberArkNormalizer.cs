@@ -9,8 +9,9 @@ namespace Thor.Workflows.Ingestion.Normalization;
 
 /// <summary>
 /// Normalizes CyberArk's raw export (one clean JSON document — no multi-document quirks like
-/// AD's, though <see cref="CyberArkExtractor"/> still recovers malformed root JSON the same way
-/// AD does) into privileged accounts, safes, and safe-membership edges.
+/// AD's) into privileged accounts, safes, and safe-membership edges. The export is streamed record
+/// by record through <see cref="StreamingRecordReader"/>, which repairs malformed records the way
+/// <see cref="JsonRepair"/> does.
 ///
 /// - <c>Accounts.AccountDetails</c> → <see cref="ParsedAccount"/> (the managed/privileged
 ///   credentials CyberArk safeguards), via <c>cyberark-account.json</c>. Each declares a
@@ -35,33 +36,61 @@ namespace Thor.Workflows.Ingestion.Normalization;
 /// <c>Safes</c>/<c>Platforms</c> beyond the above are read but not further normalized — no clean
 /// Account/Group/Asset/Entitlement/Edge fit for policy-template metadata (<c>Platforms</c>).
 /// </summary>
-public sealed class CyberArkNormalizer(ILogger<CyberArkNormalizer> logger, IAttributeMapProvider mapProvider, ConnectorTypeCatalog connectorTypes) : IConnectorNormalizer
+public sealed class CyberArkNormalizer(ILogger<CyberArkNormalizer> logger, IAttributeMapProvider mapProvider, ConnectorTypeCatalog connectorTypes) : IConnectorNormalizer, IStreamingConnectorNormalizer
 {
     private const string Connector = "CyberArk";
 
+    private static readonly string[] SafesPath = ["Safes"];
+    private static readonly string[] AccountsPath = ["Accounts", "AccountDetails"];
+    private static readonly string[] MembersPath = ["Members"];
+
+    /// <summary>Privileged accounts per yielded batch — bounds how many parsed accounts are alive at once.</summary>
+    private const int AccountChunkSize = 5000;
+
     public IngestBatch Normalize(byte[] rawExportBytes, Guid sourceId)
+    {
+        var accounts = new List<ParsedAccount>();
+        var groups = new List<ParsedGroup>();
+        var assets = new List<ParsedAsset>();
+        var repaired = 0;
+        var skipped = 0;
+        foreach (var chunk in NormalizeBatches(() => new MemoryStream(rawExportBytes, writable: false), sourceId))
+        {
+            accounts.AddRange(chunk.Accounts);
+            groups.AddRange(chunk.Groups);
+            assets.AddRange(chunk.Assets);
+            repaired += chunk.RepairedCount;
+            skipped += chunk.SkippedCount;
+        }
+        return new IngestBatch(sourceId, accounts, groups, assets, [], repaired, skipped);
+    }
+
+    /// <summary>
+    /// Reads the export one section per pass (safes, accounts, members), each pass holding a single
+    /// record at a time, and yields safes, then privileged accounts in bounded chunks, then members.
+    /// Safes come first because accounts resolve their safe by name; members come last because each
+    /// must be consolidated across every row that mentions them.
+    /// </summary>
+    public IEnumerable<IngestBatch> NormalizeBatches(Func<Stream> openExport, Guid sourceId)
     {
         var accountMap = mapProvider.GetMap(Connector, "Account");
         var safeMap = mapProvider.GetMap(Connector, "Asset");
         var memberAccountMap = mapProvider.GetMap(Connector, "MemberAccount");
         var memberGroupMap = mapProvider.GetMap(Connector, "MemberGroup");
 
-        var export = CyberArkExtractor.Extract(rawExportBytes);
-        var root = export.Root;
+        var tally = new RecordTally();
+        var accountCount = 0;
 
-        var (assets, safeNameToNumber, droppedSafes) = BuildSafes(root, sourceId, safeMap, connectorTypes.CyberArk);
+        var (assets, safeNameToNumber, droppedSafes) = BuildSafes(openExport, tally, sourceId, safeMap, connectorTypes.CyberArk);
+        var assetCount = assets.Count;
+        yield return Chunk(sourceId, [], [], assets, tally);
 
-        var accounts = new List<ParsedAccount>();
+        var accounts = new List<ParsedAccount>(AccountChunkSize);
         var droppedAccounts = 0;
-        if (root["Accounts"] is JsonObject accountsNode && accountsNode["AccountDetails"] is JsonArray accountDetails)
+        using (var stream = openExport())
         {
-            foreach (var node in accountDetails)
+            foreach (var raw in StreamingRecordReader.Read(stream, AccountsPath, tally))
             {
-                if (node is not JsonObject raw)
-                {
-                    continue;
-                }
-
                 var nativeId = MappedFieldReader.AsString(raw["AccountId"]);
                 if (string.IsNullOrEmpty(nativeId))
                 {
@@ -70,11 +99,23 @@ public sealed class CyberArkNormalizer(ILogger<CyberArkNormalizer> logger, IAttr
                 }
 
                 accounts.Add(BuildPrivilegedAccount(raw, nativeId, sourceId, accountMap, safeNameToNumber, connectorTypes.CyberArk));
+                if (accounts.Count == AccountChunkSize)
+                {
+                    accountCount += accounts.Count;
+                    yield return Chunk(sourceId, accounts, [], [], tally);
+                    accounts = new List<ParsedAccount>(AccountChunkSize);
+                }
             }
         }
 
-        var (memberAccounts, memberGroups, droppedMembers, droppedSafeRefs) = BuildMembers(root, sourceId, memberAccountMap, memberGroupMap, connectorTypes.CyberArk);
+        var (memberAccounts, memberGroups, droppedMembers, droppedSafeRefs) = BuildMembers(openExport, tally, sourceId, memberAccountMap, memberGroupMap, connectorTypes.CyberArk);
         accounts.AddRange(memberAccounts);
+        accountCount += accounts.Count;
+
+        if (tally.ArraysMissing == 3)
+        {
+            throw new InvalidOperationException("CyberArk export contains none of the expected Safes, Accounts or Members sections.");
+        }
 
         if (droppedAccounts > 0)
         {
@@ -95,29 +136,28 @@ public sealed class CyberArkNormalizer(ILogger<CyberArkNormalizer> logger, IAttr
 
         logger.LogInformation(
             "Normalized {AccountCount} account(s), {GroupCount} group(s), {AssetCount} asset(s) for source {SourceId}",
-            accounts.Count, memberGroups.Count, assets.Count, sourceId);
+            accountCount, memberGroups.Count, assetCount, sourceId);
 
-        return new IngestBatch(sourceId, accounts, memberGroups, assets, [], RepairedCount: export.RepairedCount, SkippedCount: 0);
+        yield return Chunk(sourceId, accounts, memberGroups, [], tally);
     }
 
-    private static (List<ParsedAsset> Assets, Dictionary<string, string> SafeNameToNumber, int Dropped) BuildSafes(JsonObject root, Guid sourceId, AttributeMap map, short connectorType)
+    /// <summary>Wraps one chunk, attributing to it the records repaired or skipped since the previous chunk.</summary>
+    private static IngestBatch Chunk(Guid sourceId, List<ParsedAccount> accounts, List<ParsedGroup> groups, List<ParsedAsset> assets, RecordTally tally)
+    {
+        var (repaired, skipped) = tally.Drain();
+        return new IngestBatch(sourceId, accounts, groups, assets, [], RepairedCount: repaired, SkippedCount: skipped);
+    }
+
+    private static (List<ParsedAsset> Assets, Dictionary<string, string> SafeNameToNumber, int Dropped) BuildSafes(
+        Func<Stream> openExport, RecordTally tally, Guid sourceId, AttributeMap map, short connectorType)
     {
         var assets = new List<ParsedAsset>();
         var safeNameToNumber = new Dictionary<string, string>();
         var dropped = 0;
 
-        if (root["Safes"] is not JsonArray safes)
+        using var stream = openExport();
+        foreach (var raw in StreamingRecordReader.Read(stream, SafesPath, tally))
         {
-            return (assets, safeNameToNumber, dropped);
-        }
-
-        foreach (var node in safes)
-        {
-            if (node is not JsonObject raw)
-            {
-                continue;
-            }
-
             if (MappedFieldReader.AsInt(raw["SafeNumber"]) is not int safeNumberValue)
             {
                 dropped++;
@@ -226,41 +266,34 @@ public sealed class CyberArkNormalizer(ILogger<CyberArkNormalizer> logger, IAttr
     /// (which would lose every edge but the last-staged one to Promoter's per-manifest dedup).
     /// </summary>
     private static (List<ParsedAccount> Accounts, List<ParsedGroup> Groups, int Dropped, int DroppedSafeRefs) BuildMembers(
-        JsonObject root, Guid sourceId, AttributeMap memberAccountMap, AttributeMap memberGroupMap, short connectorType)
+        Func<Stream> openExport, RecordTally tally, Guid sourceId, AttributeMap memberAccountMap, AttributeMap memberGroupMap, short connectorType)
     {
         var accounts = new List<ParsedAccount>();
         var groups = new List<ParsedGroup>();
         var dropped = 0;
         var droppedSafeRefs = 0;
 
-        if (root["Members"] is not JsonArray members)
+        var byIdentity = new Dictionary<(string Type, string Name), MemberRows>();
+        using (var stream = openExport())
         {
-            return (accounts, groups, dropped, droppedSafeRefs);
-        }
-
-        var byIdentity = new Dictionary<(string Type, string Name), List<JsonObject>>();
-        foreach (var node in members)
-        {
-            if (node is not JsonObject raw)
+            foreach (var raw in StreamingRecordReader.Read(stream, MembersPath, tally))
             {
-                continue;
-            }
+                var memberType = MappedFieldReader.AsString(raw["MemberType"]);
+                var memberName = MappedFieldReader.AsString(raw["MemberName"]);
+                if (string.IsNullOrEmpty(memberType) || string.IsNullOrEmpty(memberName))
+                {
+                    dropped++;
+                    continue;
+                }
 
-            var memberType = MappedFieldReader.AsString(raw["MemberType"]);
-            var memberName = MappedFieldReader.AsString(raw["MemberName"]);
-            if (string.IsNullOrEmpty(memberType) || string.IsNullOrEmpty(memberName))
-            {
-                dropped++;
-                continue;
+                var key = (memberType, memberName);
+                if (!byIdentity.TryGetValue(key, out var rows))
+                {
+                    rows = new MemberRows(raw);
+                    byIdentity[key] = rows;
+                }
+                rows.Access.Add((MappedFieldReader.AsInt(raw["SafeNumber"]), BuildPermissionsProps(raw)));
             }
-
-            var key = (memberType, memberName);
-            if (!byIdentity.TryGetValue(key, out var rows))
-            {
-                rows = [];
-                byIdentity[key] = rows;
-            }
-            rows.Add(raw);
         }
 
         foreach (var ((memberType, memberName), rows) in byIdentity)
@@ -278,10 +311,17 @@ public sealed class CyberArkNormalizer(ILogger<CyberArkNormalizer> logger, IAttr
         return (accounts, groups, dropped, droppedSafeRefs);
     }
 
-    private static ParsedAccount BuildMemberAccount(string memberName, IReadOnlyList<JsonObject> rows, Guid sourceId, AttributeMap map, short connectorType, ref int droppedSafeRefs)
+    /// <summary>What consolidating one member needs from its rows: the first row's fields, and each row's safe reference and permissions.</summary>
+    private sealed class MemberRows(JsonObject first)
     {
-        var edgeRefs = BuildHasAccessEdgeRefs(rows, ref droppedSafeRefs);
-        var extra = UnmappedAttributeCollector.Collect(rows[0], map);
+        public JsonObject First { get; } = first;
+        public List<(int? SafeNumber, string PermissionsProps)> Access { get; } = [];
+    }
+
+    private static ParsedAccount BuildMemberAccount(string memberName, MemberRows rows, Guid sourceId, AttributeMap map, short connectorType, ref int droppedSafeRefs)
+    {
+        var edgeRefs = BuildHasAccessEdgeRefs(rows.Access, ref droppedSafeRefs);
+        var extra = UnmappedAttributeCollector.Collect(rows.First, map);
         var rawAttributes = new RawAttributesWithEdges(AliasKeys: [memberName.ToLowerInvariant()], EdgeRefs: edgeRefs, Extra: extra);
 
         var account = new ParsedAccount(
@@ -290,7 +330,7 @@ public sealed class CyberArkNormalizer(ILogger<CyberArkNormalizer> logger, IAttr
             NativeId: memberName,
             AccountKind: "cyberark_user",
             IsHuman: true,
-            DisplayName: MappedField(rows[0], map, "display_name"),
+            DisplayName: MappedField(rows.First, map, "display_name"),
             SamAccountName: null,
             Upn: null,
             Email: null,
@@ -313,10 +353,10 @@ public sealed class CyberArkNormalizer(ILogger<CyberArkNormalizer> logger, IAttr
         ["edge_refs"] = edgeRefs,
     };
 
-    private static ParsedGroup BuildMemberGroup(string memberName, IReadOnlyList<JsonObject> rows, Guid sourceId, AttributeMap map, short connectorType, ref int droppedSafeRefs)
+    private static ParsedGroup BuildMemberGroup(string memberName, MemberRows rows, Guid sourceId, AttributeMap map, short connectorType, ref int droppedSafeRefs)
     {
-        var edgeRefs = BuildHasAccessEdgeRefs(rows, ref droppedSafeRefs);
-        var extra = UnmappedAttributeCollector.Collect(rows[0], map);
+        var edgeRefs = BuildHasAccessEdgeRefs(rows.Access, ref droppedSafeRefs);
+        var extra = UnmappedAttributeCollector.Collect(rows.First, map);
         var rawAttributes = new RawAttributesWithEdges(AliasKeys: [memberName.ToLowerInvariant()], EdgeRefs: edgeRefs, Extra: extra);
 
         var group = new ParsedGroup(
@@ -324,7 +364,7 @@ public sealed class CyberArkNormalizer(ILogger<CyberArkNormalizer> logger, IAttr
             ConnectorType: connectorType,
             NativeId: memberName,
             GroupClass: "cyberark_group",
-            DisplayName: MappedField(rows[0], map, "display_name"),
+            DisplayName: MappedField(rows.First, map, "display_name"),
             Email: null,
             DomainName: null,
             IsLargeGroup: false,
@@ -344,18 +384,17 @@ public sealed class CyberArkNormalizer(ILogger<CyberArkNormalizer> logger, IAttr
         ["edge_refs"] = edgeRefs,
     };
 
-    private static List<EdgeRef> BuildHasAccessEdgeRefs(IReadOnlyList<JsonObject> memberRows, ref int droppedSafeRefs)
+    private static List<EdgeRef> BuildHasAccessEdgeRefs(IReadOnlyList<(int? SafeNumber, string PermissionsProps)> access, ref int droppedSafeRefs)
     {
         var edgeRefs = new List<EdgeRef>();
-        foreach (var row in memberRows)
+        foreach (var (safeNumberValue, permissionsProps) in access)
         {
-            if (MappedFieldReader.AsInt(row["SafeNumber"]) is not int safeNumberValue)
+            if (safeNumberValue is not int safeNumber)
             {
                 droppedSafeRefs++;
                 continue;
             }
-            var safeNumber = safeNumberValue.ToString();
-            edgeRefs.Add(new EdgeRef("HAS_ACCESS", "out", safeNumber, "asset", BuildPermissionsProps(row)));
+            edgeRefs.Add(new EdgeRef("HAS_ACCESS", "out", safeNumber.ToString(), "asset", permissionsProps));
         }
         return edgeRefs;
     }

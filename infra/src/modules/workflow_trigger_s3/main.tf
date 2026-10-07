@@ -280,7 +280,8 @@ resource "aws_pipes_pipe" "trigger" {
 
   source_parameters {
     sqs_queue_parameters {
-      batch_size = var.pipe_batch_size
+      batch_size                         = var.pipe_batch_size
+      maximum_batching_window_in_seconds = var.pipe_maximum_batching_window_seconds
     }
   }
 

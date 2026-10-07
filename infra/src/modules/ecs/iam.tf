@@ -186,6 +186,24 @@ resource "aws_iam_role_policy" "task_cognito_idp" {
   })
 }
 
+# thor-api's GraphRelationshipReader serves the /accounts/{id} and /groups/{id} relationship routes
+# from Neptune. Read-only: ReadDataViaQuery covers Gremlin traversals and GetQueryStatus the driver's
+# status calls; no write, delete or loader action — only the workflows write the graph.
+resource "aws_iam_role_policy" "task_neptune_read" {
+  for_each = toset(contains(keys(local.active_services), "thor-api") && var.neptune_cluster_resource_id != "" ? ["thor-api"] : [])
+
+  name = "neptune-read"
+  role = aws_iam_role.task[each.key].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["neptune-db:ReadDataViaQuery", "neptune-db:GetQueryStatus"]
+      Resource = "arn:aws:neptune-db:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:${var.neptune_cluster_resource_id}/*"
+    }]
+  })
+}
+
 # task-api's AuthenticationSecretReader reads those same secrets to serve GET /tasks/{taskId}/settings.
 # Read-only: task-api never creates or overwrites tenant credentials.
 resource "aws_iam_role_policy" "task_tenant_secrets_read" {

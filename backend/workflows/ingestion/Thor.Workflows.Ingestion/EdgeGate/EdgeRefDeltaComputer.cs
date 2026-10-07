@@ -54,19 +54,29 @@ public sealed class EdgeRefDeltaComputer
                 FROM staged s
                 LEFT JOIN {ownerTable} o ON o.source_id = s.source_id AND o.native_id = s.native_id
             ),
-            added AS (
-                SELECT p.source_id, p.native_id, @entity_type AS entity_type, 'add' AS op, n.ref
+            new_exp AS (
+                SELECT p.source_id, p.native_id, n.ref
                 FROM paired p
                 CROSS JOIN LATERAL jsonb_array_elements(p.new_refs) AS n(ref)
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM jsonb_array_elements(p.old_refs) AS o(ref) WHERE o.ref = n.ref)
             ),
-            removed AS (
-                SELECT p.source_id, p.native_id, @entity_type AS entity_type, 'remove' AS op, o.ref
+            old_exp AS (
+                SELECT p.source_id, p.native_id, o.ref
                 FROM paired p
                 CROSS JOIN LATERAL jsonb_array_elements(p.old_refs) AS o(ref)
+            ),
+            added AS (
+                SELECT n.source_id, n.native_id, @entity_type AS entity_type, 'add' AS op, n.ref
+                FROM new_exp n
                 WHERE NOT EXISTS (
-                    SELECT 1 FROM jsonb_array_elements(p.new_refs) AS n(ref) WHERE n.ref = o.ref)
+                    SELECT 1 FROM old_exp o
+                    WHERE o.source_id = n.source_id AND o.native_id = n.native_id AND o.ref = n.ref)
+            ),
+            removed AS (
+                SELECT o.source_id, o.native_id, @entity_type AS entity_type, 'remove' AS op, o.ref
+                FROM old_exp o
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM new_exp n
+                    WHERE n.source_id = o.source_id AND n.native_id = o.native_id AND n.ref = o.ref)
             )
             INSERT INTO tenant.edge_ref_delta (id, scan_manifest_id, source_id, native_id, entity_type, op, ref)
             SELECT gen_random_uuid(), @scan_manifest_id, source_id, native_id, entity_type, op, ref::text FROM added

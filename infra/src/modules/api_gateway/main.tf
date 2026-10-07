@@ -50,6 +50,15 @@ resource "aws_apigatewayv2_api" "thor-apigw-api" {
   name          = "${var.service_name}-${var.environment}-api"
   protocol_type = "HTTP"
 
+  # Every tenant's SPA (<tenant>.<env-domain>) calls this one shared API host, so any origin is
+  # allowed. API Gateway answers preflight itself, before the authorizer. "*" headers alone don't
+  # cover Authorization in browsers, hence it's listed explicitly. No credentials: "*" forbids them.
+  cors_configuration {
+    allow_origins = ["*"]
+    allow_methods = ["*"]
+    allow_headers = ["authorization", "content-type"]
+  }
+
   tags = var.tags
 
   # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.

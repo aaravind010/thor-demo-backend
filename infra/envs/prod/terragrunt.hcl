@@ -91,7 +91,7 @@ inputs = {
           domain_name      = local.apex_domain
           include_wildcard = true
         }
-        # CloudFront (API GW), us-east-1. include_wildcard covers per-tenant API routing (tenant1.api.sphereboard.ai).
+        # CloudFront (API GW), us-east-1.
         api = {
           domain_name      = "api.${local.apex_domain}"
           include_wildcard = true

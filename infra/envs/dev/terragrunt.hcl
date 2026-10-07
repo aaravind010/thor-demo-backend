@@ -99,7 +99,7 @@ inputs = {
           domain_name      = "dev.sphereboarddev.ai"
           include_wildcard = true
         }
-        # CloudFront (API GW), us-east-1. include_wildcard covers per-tenant API routing (tenant1.api.dev.sphereboarddev.ai).
+        # CloudFront (API GW), us-east-1.
         api = {
           domain_name      = "api.dev.sphereboarddev.ai"
           include_wildcard = true
@@ -132,8 +132,8 @@ inputs = {
   aurora_database_name         = "thor_dev_db"
   aurora_master_username       = "thor_admin"
   aurora_engine_version        = "16.13"
-  aurora_min_capacity          = 0.5
-  aurora_max_capacity          = 1
+  aurora_min_capacity          = 2
+  aurora_max_capacity          = 8
   aurora_backup_retention_days = 7
   aurora_deletion_protection   = false
   aurora_skip_final_snapshot   = true
@@ -154,7 +154,13 @@ inputs = {
   # Deploying a new image does NOT require a Terraform apply: Terraform points the compute at a
   # floating tag and CI moves that tag. enabled gates whether the workflow exists at all.
   workflows = {
-    ingestion = { enabled = true }
+    ingestion = {
+      enabled = true
+      settings = {
+        task_cpu    = "2048"
+        task_memory = "8192"
+      }
+    }
 
     # Enabled alongside ingestion, which chains to it: ingestion's StartAtre state names ATRE's
     # state machine by built ARN, so leaving ATRE off would give the live ingestion definition a
@@ -180,7 +186,7 @@ inputs = {
   # --- neptune graph db ---
   enable_neptune                = true
   neptune_engine_version        = "1.4.8.0"
-  neptune_min_capacity          = 1
+  neptune_min_capacity          = 2
   neptune_max_capacity          = 8
   neptune_backup_retention_days = 7
   neptune_deletion_protection   = false
@@ -222,8 +228,7 @@ inputs = {
 
   # Tenant records go into the hosted_zones entry whose zone_name matches this.
   tenant_provisioning_base_domain = "dev.sphereboarddev.ai"
-  # TODO: set to the API's public hostname (wildcard custom domain target) before enabling.
-  tenant_provisioning_dns_target = "api.dev.sphereboarddev.ai"
+  tenant_provisioning_dns_target  = "dev.sphereboarddev.ai"
 
   tags = {}
 }

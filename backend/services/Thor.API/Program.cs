@@ -19,6 +19,7 @@ using Thor.DataConnectionManager.Routing;
 using Thor.DataConnectionManager.Validation;
 using Thor.DataLayer.Auth;
 using Thor.DataLayer.Data;
+using Thor.Graph;
 using Thor.IntelligenceEngine.Grpc.V1;
 
 Env.Load();
@@ -141,6 +142,20 @@ try
     builder.Services.AddScoped<PartyAssignmentService>();
     builder.Services.AddScoped<AccountVoteService>();
     builder.Services.AddScoped<OwnershipVoteService>();
+
+    // Read-only graph traversals for the /accounts/{id} and /groups/{id} relationship routes. One
+    // shared, tenant-partitioned Neptune cluster (ADR §6.1), so this is static config rather than
+    // per-tenant routing; the connection itself opens on the first read, authenticated by SigV4.
+    builder.Services.AddSingleton(new NeptuneOptions
+    {
+        Endpoint = RequiredEnvironment.GetVariable("THOR_NEPTUNE_ENDPOINT"),
+        Port = int.Parse(RequiredEnvironment.GetVariable("THOR_NEPTUNE_PORT")),
+        EnableSsl = bool.Parse(RequiredEnvironment.GetVariable("THOR_NEPTUNE_ENABLESSL")),
+        Region = RequiredEnvironment.GetVariable("THOR_AWS_REGION"),
+    });
+    builder.Services.AddSingleton<IGraphRelationshipReader, GraphRelationshipReader>();
+    builder.Services.AddScoped<AccountRelationshipService>();
+    builder.Services.AddScoped<GroupRelationshipService>();
 
     // Tenant-admin IdP management on each tenant's own Cognito user pool. Factory-registered so the
     // client (and its region/credential lookup) is only built when an identity-provider route runs.

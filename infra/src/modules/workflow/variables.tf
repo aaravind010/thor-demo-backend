@@ -246,6 +246,7 @@ variable "task_cpu" {
   description = "Fargate task CPU units."
   type        = string
   default     = "1024"
+  nullable    = false
 }
 
 variable "task_memory" {
