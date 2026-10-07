@@ -52,10 +52,6 @@ jobs:
     environment: ${{ inputs.environment }}
     outputs:
       execution_arn: ${{ steps.start.outputs.execution_arn }}
-      status: ${{ steps.wait.outputs.status }}
-      failed_step: ${{ steps.wait.outputs.failed_step }}
-      reason: ${{ steps.wait.outputs.reason }}
-      result: ${{ steps.wait.outputs.result }}
     steps:
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -99,11 +95,28 @@ jobs:
           echo "Started ${EXECUTION_ARN}"
           echo "execution_arn=${EXECUTION_ARN}" >> "$GITHUB_OUTPUT"
 
-      # Same job as the start so it reuses the approval and AWS credentials.
+  monitor-execution:
+    needs: start-execution
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # No environment, so qa/prod don't ask for a second approval. Without it the AWS role is
+    # assumed with the branch subject (ref:refs/heads/<branch>), so run dev from dev, qa from qa
+    # and prod from main.
+    outputs:
+      status: ${{ steps.wait.outputs.status }}
+      failed_step: ${{ steps.wait.outputs.failed_step }}
+      reason: ${{ steps.wait.outputs.reason }}
+      result: ${{ steps.wait.outputs.result }}
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.environment == 'dev' && vars.DEV_AWS_ROLE_ARN || inputs.environment == 'qa' && vars.QA_AWS_ROLE_ARN || vars.PROD_AWS_ROLE_ARN }}
+          aws-region: ${{ inputs.environment == 'dev' && vars.DEV_AWS_REGION || inputs.environment == 'qa' && vars.QA_AWS_REGION || vars.PROD_AWS_REGION }}
+
       - name: Wait for provisioning to finish
         id: wait
         env:
-          EXECUTION_ARN: ${{ steps.start.outputs.execution_arn }}
+          EXECUTION_ARN: ${{ needs.start-execution.outputs.execution_arn }}
         run: |
           set -euo pipefail
 
@@ -138,9 +151,9 @@ jobs:
           exit 1
 
   execution-summary:
-    needs: start-execution
-    # always() so a failed run still gets a summary, as long as the execution was started.
-    if: always() && needs.start-execution.outputs.execution_arn != ''
+    needs: [start-execution, monitor-execution]
+    # always() so a failed run still gets a summary.
+    if: always() && needs.start-execution.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -151,10 +164,10 @@ jobs:
           SUBDOMAIN: ${{ inputs.subdomain }}
           ADMIN_EMAIL: ${{ inputs.admin_email }}
           EXECUTION_ARN: ${{ needs.start-execution.outputs.execution_arn }}
-          STATUS: ${{ needs.start-execution.outputs.status }}
-          FAILED_STEP: ${{ needs.start-execution.outputs.failed_step }}
-          REASON: ${{ needs.start-execution.outputs.reason }}
-          RESULT: ${{ needs.start-execution.outputs.result }}
+          STATUS: ${{ needs.monitor-execution.outputs.status }}
+          FAILED_STEP: ${{ needs.monitor-execution.outputs.failed_step }}
+          REASON: ${{ needs.monitor-execution.outputs.reason }}
+          RESULT: ${{ needs.monitor-execution.outputs.result }}
         run: |
           set -euo pipefail
           exec >> "$GITHUB_STEP_SUMMARY"
@@ -168,7 +181,7 @@ jobs:
           echo
 
           if [ -z "$STATUS" ]; then
-            echo "Monitoring didn't finish, so the result is unknown."
+            echo "The monitor job didn't finish, so the result is unknown."
             exit 0
           fi
 
