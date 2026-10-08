@@ -7,7 +7,7 @@ terraform {
 }
 
 locals {
-  apex_domain = "sphereboarddev.ai" # Follows prod's confirmed root_domain = "sphereboard.ai" naming
+  apex_domain = "hartech.online" # Follows prod's confirmed root_domain = "sphereboard.ai" naming
 }
 
 # Every value the root module accepts is spelled out below instead of relying on a default in infra/src/variables.tf; only `environment` is left out, since infra/root.hcl already supplies it for every environment.
@@ -103,24 +103,24 @@ inputs = {
     }
 
     thor = {
-      zone_name        = "dev.sphereboarddev.ai"
+      zone_name        = "dev.hartech.online"
       parent_zone_name = local.apex_domain
       # modules/acm auto-routes each cert's validation record to the zone that serves its hostname.
       certificates = {
-        # CloudFront (S3), us-east-1. include_wildcard covers tenant subdomains (tenant1.dev.sphereboarddev.ai).
+        # CloudFront (S3), us-east-1. include_wildcard covers tenant subdomains (tenant1.dev.hartech.online).
         frontend = {
-          domain_name      = "dev.sphereboarddev.ai"
+          domain_name      = "dev.hartech.online"
           include_wildcard = true
         }
-        # CloudFront (API GW), us-east-1. include_wildcard covers per-tenant API routing (tenant1.api.dev.sphereboarddev.ai).
+        # CloudFront (API GW), us-east-1. include_wildcard covers per-tenant API routing (tenant1.api.dev.hartech.online).
         api = {
-          domain_name      = "api.dev.sphereboarddev.ai"
+          domain_name      = "api.dev.hartech.online"
           include_wildcard = true
         }
         # NLB TLS re-encryption (CN/SNI only). Only non-us-east-1 cert here — an NLB needs its cert
         # in-region, so scope = "regional" (resolves against var.aws_region in main.tf).
         backend = {
-          domain_name = "backend.dev.sphereboarddev.ai"
+          domain_name = "backend.dev.hartech.online"
           scope       = "regional"
         }
       }
@@ -234,9 +234,9 @@ inputs = {
   tenant_provisioning_source_dir = "${get_repo_root()}/backend/functions/Thor.TenantProvisioning/publish"
 
   # Tenant records go into the hosted_zones entry whose zone_name matches this.
-  tenant_provisioning_base_domain = "dev.sphereboarddev.ai"
+  tenant_provisioning_base_domain = "dev.hartech.online"
   # TODO: set to the API's public hostname (wildcard custom domain target) before enabling.
-  tenant_provisioning_dns_target = "api.dev.sphereboarddev.ai"
+  tenant_provisioning_dns_target = "api.dev.hartech.online"
 
   tags = {}
 }

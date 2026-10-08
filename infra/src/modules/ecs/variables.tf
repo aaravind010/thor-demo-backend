@@ -113,6 +113,17 @@ variable "websocket_connections_arn" {
   description = "execute-api ARN of the WebSocket API stage's @connections (modules/api_gateway_ws connections_arn) — thor-api's task role gets ManageConnections on it. Only read when compute is enabled, which is also when that module exists."
   default     = ""
 }
+variable "tenant_vendors_allowlist_enabled" {
+  type        = bool
+  description = "Whether the DNS Firewall tenant-vendors domain list exists (NAT egress on). Gates thor-api's grant on it — a plain bool because the list's ARN isn't known until apply, and a for_each can't key off an unknown value."
+  default     = false
+}
+
+variable "tenant_vendors_domain_list_arn" {
+  type        = string
+  description = "ARN of the DNS Firewall tenant-vendors domain list thor-api keeps in sync with tenant log sink endpoints. Used only when tenant_vendors_allowlist_enabled."
+  default     = ""
+}
 
 variable "cross_account_pull_principal_arns" {
   type        = list(string)

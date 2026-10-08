@@ -93,6 +93,8 @@ locals {
 
       # @connections base URL for streaming agent responses (PostToConnection), reached over the NAT.
       THOR_WEBSOCKET_MANAGEMENT_ENDPOINT = var.enable_compute ? module.api_gateway_ws[0].management_endpoint : ""
+      # DNS Firewall list thor-api keeps in sync with tenant log sink endpoints ("" when NAT egress is off).
+      THOR_TENANT_VENDORS_DOMAIN_LIST_ID = module.network.tenant_vendors_domain_list_id
     })
     task-api = tomap({
       THOR_UPLOADS_BUCKET = module.uploads.bucket_name
@@ -165,6 +167,9 @@ module "ecs" {
   uploads_bucket_arn    = module.uploads.bucket_arn
 
   websocket_connections_arn = var.enable_compute ? module.api_gateway_ws[0].connections_arn : ""
+  # thor-api's grant on the DNS Firewall tenant-vendors list, which only exists while NAT egress is on.
+  tenant_vendors_allowlist_enabled = var.nat_gateway_mode != "none"
+  tenant_vendors_domain_list_arn   = module.network.tenant_vendors_domain_list_arn
 
   tags = var.tags
 }

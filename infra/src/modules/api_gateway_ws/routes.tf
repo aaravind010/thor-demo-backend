@@ -53,6 +53,9 @@ resource "aws_apigatewayv2_integration" "invoke" {
     "integration.request.header.X-THOR-TENANT-ID"     = "context.authorizer.tenant_id"
     "integration.request.header.X-THOR-PRINCIPAL-ID"  = "context.authorizer.principal_id"
     "integration.request.header.X-THOR-CONNECTION-ID" = "context.connectionId"
+    # Client repeats its token in every frame ("token": "Bearer <jwt>"); Thor.Api's
+    # CognitoAuthMiddleware re-verifies it against the tenant fixed at $connect.
+    "integration.request.header.Authorization" = "route.request.body.token"
   }
 }
 
